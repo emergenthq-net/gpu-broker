@@ -86,3 +86,20 @@ def test_frontend_entry_is_never_a_job_target():
     assert CAT["models"]["swarmui"]["session_only"]
     assert resolve(CAT, "swarmui").resolved != "swarmui"
     assert resolve(CAT, "sdxl-base", kind="image").resolved != "swarmui"
+
+
+def test_known_model_must_match_requested_kind(cat):
+    r = resolve(cat, "sdxl-base", kind="llm")
+    assert r.resolved != "sdxl-base"
+    assert r.substitution is not None and "requested kind" in r.substitution
+
+
+def test_known_model_must_cover_explicit_capabilities(cat):
+    r = resolve(cat, "sdxl-base", caps=["t2i", "nonexistent-cap"])
+    assert r.resolved is None
+    assert "does not provide capabilities" in r.error
+
+
+def test_explicit_empty_capability_set_does_not_infer_all_model_caps(cat):
+    r = resolve(cat, "sdxl-base", caps=[])
+    assert r.resolved == "sdxl-base"
