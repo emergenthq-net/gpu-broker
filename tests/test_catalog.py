@@ -21,7 +21,9 @@ def test_the_fixture_and_examples_validate():
 
 
 @pytest.mark.parametrize("model", [{"runner": "shell"}, {"status": "maybe"}, {"unit": "../x"},
-                                   {"endpoint": "file:///etc/passwd"}, {"open_url": "javascript:alert(1)"}])
+                                   {"endpoint": "file:///etc/passwd"}, {"open_url": "javascript:alert(1)"},
+                                   {"health_path": "http://evil.example/health"}, {"metrics_path": "../metrics"},
+                                   {"api_paths": ["/v1/chat/completions", "/arbitrary-proxy"]}])
 def test_rejects_unsafe_entries(model):
     with pytest.raises(ValueError):
         validate(bad(**model))
@@ -59,3 +61,11 @@ def test_variants_and_reservations_are_validated():
     d["models"]["llama-8b"]["reserved_interactive"] = d["models"]["llama-8b"]["slots"]
     with pytest.raises(ValueError, match="reserved_interactive"):
         validate(d)
+
+
+def test_runtime_contract_accepts_custom_health_and_declared_api_paths():
+    d = copy.deepcopy(DATA)
+    d["models"]["llama-8b"]["health_path"] = "/api/version"
+    d["models"]["llama-8b"]["metrics_path"] = "/metrics"
+    d["models"]["llama-8b"]["api_paths"] = ["/v1/chat/completions", "/v1/embeddings"]
+    validate(d)
