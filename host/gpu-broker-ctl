@@ -1,0 +1,58 @@
+#!/bin/bash
+# gpu-broker-ctl — the ONLY host action the gpu-broker (proxmox driver) may trigger.
+# Installed at /usr/local/sbin/gpu-broker-ctl on the Proxmox host; invoked via an
+# authorized_keys `command=` restriction, so the verb comes from SSH_ORIGINAL_COMMAND:
+#   command="/usr/local/sbin/gpu-broker-ctl",restrict ssh-ed25519 AAAA... gpu-broker
+# Site values come from /etc/gpu-broker-ctl.conf (override path: GPU_BROKER_CTL_CONF).
+set -euo pipefail
+ALLOW_UNITS=""                        # "<ct>:<unit> ..." — empty allows no unit at all
+MODELS=/var/lib/gpu-broker/models     # download root on the host
+COMFY_CT=""                           # CT running ComfyUI (comfy-link); empty disables the verb
+COMFY_MODELS_MOUNT=/mnt/ml-models     # $MODELS as mounted inside $COMFY_CT
+COMFY_MODELS_DIR=/opt/ComfyUI/models  # ComfyUI models dir inside $COMFY_CT
+LOG=/var/log/gpu-broker-ctl.log
+SAMPLE_S=2                            # gpustream period, seconds
+CONF="${GPU_BROKER_CTL_CONF:-/etc/gpu-broker-ctl.conf}"
+# shellcheck source=/dev/null
+if [[ -f "$CONF" ]]; then . "$CONF"; fi
+read -r -a A <<< "${SSH_ORIGINAL_COMMAND:-$*}"
+echo "$(date -Is) ${A[*]}" >> "$LOG"
+safe(){ [[ "$1" =~ ^[A-Za-z0-9._/@:+*?-]+$ && "$1" != *..* && "$1" != -* ]] || { echo "bad arg: $1" >&2; exit 2; }; }
+for a in "${A[@]:1}"; do safe "$a"; done
+
+case "${A[0]:-}" in
+  unit)   # unit <ct> <name> start|stop|is-active
+    [[ " $ALLOW_UNITS " == *" ${A[1]}:${A[2]} "* ]] || { echo "unit not allowlisted" >&2; exit 3; }
+    [[ "${A[3]}" =~ ^(start|stop|is-active)$ ]] || exit 2
+    exec pct exec "${A[1]}" -- systemctl "${A[3]}" "${A[2]}" ;;
+  gpu)
+    exec nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits ;;
+  gpustream)  # one line every $SAMPLE_S s: used,total,util,power,temp,sm|<ct>:<mib> ...
+    while :; do
+      g=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,power.draw,temperature.gpu,clocks.sm --format=csv,noheader,nounits | tr -d " ")
+      pr=""; while IFS=, read -r pid mib; do
+        [[ -n "$pid" ]] || continue
+        ct=$(grep -o "/lxc/[0-9]*" "/proc/$pid/cgroup" 2>/dev/null | head -1 | cut -d/ -f3)
+        pr+=" ${ct:-host}:$mib"
+      done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | tr -d " ")
+      echo "$g|$pr"; sleep "$SAMPLE_S"
+    done ;;
+  download)  # download hf <org/repo> <slug> [include...] | download gh <https://github.com/o/r> <slug>
+    [[ "${A[3]}" =~ ^[a-z0-9][a-z0-9.-]{0,63}$ ]] || { echo "bad slug" >&2; exit 2; }
+    D="$MODELS/${A[3]}"; mkdir -p "$D"
+    if [[ "${A[1]}" == hf ]]; then
+      [[ "${A[2]}" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 2
+      inc=(); for p in "${A[@]:4}"; do inc+=(--include "$p"); done
+      exec hf download "${A[2]}" "${inc[@]}" --local-dir "$D"
+    elif [[ "${A[1]}" == gh ]]; then
+      [[ "${A[2]}" =~ ^https://github\.com/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$ ]] || exit 2
+      [[ -d "$D/.git" ]] && exec git -C "$D" pull --ff-only
+      exec git clone --depth 1 "${A[2]}" "$D"
+    fi; exit 2 ;;
+  comfy-link)  # comfy-link <path under ml-models> <comfy models subdir>
+    [[ "${A[2]}" =~ ^(diffusion_models|loras|text_encoders|vae|clip_vision|checkpoints)$ ]] || exit 2
+    [[ -f "$MODELS/${A[1]}" ]] || { echo "no such file" >&2; exit 4; }
+    [[ "$COMFY_CT" =~ ^[0-9]+$ ]] || { echo "comfy-link disabled (COMFY_CT unset)" >&2; exit 2; }
+    exec pct exec "$COMFY_CT" -- ln -sfn "$COMFY_MODELS_MOUNT/${A[1]}" "$COMFY_MODELS_DIR/${A[2]}/$(basename "${A[1]}")" ;;
+  *) echo "usage: unit|gpu|gpustream|download|comfy-link" >&2; exit 2 ;;
+esac

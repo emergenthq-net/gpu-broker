@@ -1,0 +1,70 @@
+# gpu-broker model catalog — one entry per requestable model.
+#
+# kind:     llm | image | video | 3d | ui
+# runner:   llm_unit (an OpenAI-compatible server the driver starts/stops, e.g. llama.cpp)
+#           comfy    (a ComfyUI graph from gpu_broker/templates/, run on the shared ComfyUI)
+#           external (downloaded, but nothing can run it yet)
+# unit:     what the driver starts/stops: a systemd unit, a Docker container name, or
+#           {name: <unit>, target: <ct id>} for the Proxmox driver
+# vram_mib: peak VRAM; models over (vram_total_mib - vram_reserve_mib) are never loaded
+# caps:     capabilities; a request's caps must be a subset for a model to stand in for another
+# quality:  0-100, the highest-quality valid substitute of the same kind wins
+# status:   ready | downloadable | needs_integration
+# source:   {hf: org/repo, slug, include?} or {gh: https://github.com/o/r, slug} — for downloads
+defaults:
+  resident: llama-3.1-8b      # made resident again once the queue has been idle for idle_restore_s
+  idle_restore_s: 120
+  session_idle_s: 900         # an interactive ComfyUI session ends after this long with no render
+  session_yield_s: 120        # ...or this long when a queued job is waiting
+  session_max_s: 14400
+  background_requesters: [batch-agent]   # x-requester values queued behind interactive chat
+  vram_total_mib: 24564       # your card
+  vram_reserve_mib: 600       # headroom for the desktop / CUDA context
+
+models:
+  llama-3.1-8b:
+    kind: llm
+    runner: llm_unit
+    unit: llama-server               # systemd unit or container running llama.cpp's llama-server
+    endpoint: http://127.0.0.1:8080
+    served_name: llama-3.1-8b-instruct
+    auth_env: UPSTREAM_TOKEN_LLAMA   # optional: env var holding llama-server's --api-key
+    vram_mib: 7500
+    slots: 4                         # llama-server -np 4: the broker runs up to 4 calls at once
+    reserved_interactive: 1          # background callers may use 3; one slot stays free for people
+    variants:                        # extra model ids: same server, request overrides
+      llama-3.1-8b-precise: {temperature: 0.1}
+    caps: [chat, code]
+    quality: 60
+    status: ready
+    source: {hf: bartowski/Meta-Llama-3.1-8B-Instruct-GGUF, slug: llama-3.1-8b,
+             include: ["Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf"]}
+    aliases: [llama, llama-3.1-8b-instruct]
+
+  sdxl-base:
+    kind: image
+    runner: comfy
+    template: sdxl
+    params: {ckpt: sd_xl_base_1.0.safetensors}   # in ComfyUI's models/checkpoints/
+    vram_mib: 9000
+    caps: [t2i]
+    quality: 60
+    status: ready
+    source: {hf: stabilityai/stable-diffusion-xl-base-1.0, slug: sdxl-base,
+             include: ["sd_xl_base_1.0.safetensors"]}
+    aliases: [sdxl]
+
+  wan2.2-5b:
+    kind: video
+    runner: comfy
+    template: wan5b      # needs wan2.2_ti2v_5B_fp16, umt5_xxl_fp8_e4m3fn_scaled, wan2.2_vae
+    comfy_template: video_wan2_2_5B_ti2v
+    vram_mib: 23000
+    caps: [t2v]
+    quality: 70
+    status: ready
+    source: {hf: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, slug: wan2.2-5b,
+             include: ["split_files/diffusion_models/wan2.2_ti2v_5B_fp16.safetensors",
+                       "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
+                       "split_files/vae/wan2.2_vae.safetensors"]}
+    aliases: [wan5b, wan2.2]

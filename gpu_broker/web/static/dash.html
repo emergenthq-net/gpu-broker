@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>gpu-broker</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#667085; --line:#e4e7ec;
+          --ok:#12805c; --warn:#b54708; --bad:#b42318; --acc:#3b5bdb;
+          --ttft:#2b8a3e; --power:#e8590c; --temp:#c92a2a; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#0f1115; --card:#171a21; --fg:#e6e8eb; --mute:#98a2b3; --line:#2a2f3a;
+            --ok:#3ccf91; --warn:#f5a524; --bad:#f97066; --acc:#8ea2ff;
+            --ttft:#51cf66; --power:#ff922b; --temp:#ff6b6b; }
+  }
+  * { box-sizing:border-box }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif; }
+  main { max-width:1100px; margin:0 auto; padding:16px; }
+  h1 { font-size:18px; margin:0 0 12px; display:flex; gap:10px; align-items:baseline; flex-wrap:wrap }
+  h1 small { color:var(--mute); font-weight:400; font-size:12px }
+  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--mute); margin:0 0 8px }
+  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0 }
+  .big { font-size:22px; font-weight:600 }
+  .mute { color:var(--mute) } .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
+  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:6px }
+  .bar i { display:block; height:100%; background:var(--acc) }
+  .wide { margin-top:12px; overflow-x:auto }
+  table { width:100%; border-collapse:collapse; font-size:13px }
+  th,td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); white-space:nowrap }
+  th { color:var(--mute); font-weight:500 }
+  code { font:12px ui-monospace,Menlo,monospace }
+  canvas { width:100%; height:70px; display:block; margin-top:6px }
+  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px }
+  .kv b { font-weight:500; color:var(--mute) }
+  .ttft { color:var(--ttft) }
+  #tok { display:none; gap:8px; margin-bottom:12px } #tok input { flex:1; min-width:0; padding:6px }
+</style>
+</head>
+<body>
+<main>
+  <h1>gpu-broker <small id="upd">connecting…</small></h1>
+  <div id="tok"><input id="t" type="password" placeholder="broker token" autocomplete="off">
+    <button data-action="save-token">Save</button></div>
+  <div class="grid">
+    <div class="card"><h2 id="gpuT">GPU</h2><div class="big" id="vram">–</div>
+      <div class="bar"><i id="vbar" style="width:0"></i></div><div class="mute" id="util"></div></div>
+    <div class="card"><h2>Resident</h2><div class="big" id="res">–</div><div class="mute" id="comfy"></div></div>
+    <div class="card"><h2>Running</h2><div class="big" id="run">idle</div><div class="mute" id="runsub"></div></div>
+    <div class="card"><h2>Last 24 h</h2><div class="big" id="sum">–</div><div class="mute" id="evs"></div></div>
+  </div>
+  <div class="card wide"><h2>Models — click to use</h2><div id="ses" class="mute" style="margin-bottom:8px">–</div>
+    <table><thead><tr><th>kind</th><th>model</th><th>VRAM</th><th>status</th><th></th></tr></thead><tbody id="idx"></tbody></table></div>
+  <h2 style="margin-top:14px">Live <span class="mute" id="lErr" style="text-transform:none"></span></h2>
+  <div class="grid">
+    <div class="card"><h2>VRAM by owner · 15 min</h2><div id="lVram" class="mute">–</div><canvas id="cVram"></canvas></div>
+    <div class="card"><h2>GPU utilization</h2><div class="big" id="lUtil">–</div><canvas id="cUtil"></canvas></div>
+    <div class="card"><h2>Power</h2><div class="big" id="lPow">–</div><canvas id="cPow"></canvas></div>
+    <div class="card"><h2>Temperature</h2><div class="big" id="lTemp">–</div><canvas id="cTemp"></canvas></div>
+    <div class="card"><h2>Generation tok/s per job · 1 h</h2><div class="mute" id="lTps">–</div><canvas id="cTps"></canvas></div>
+    <div class="card"><h2>Latency per job · 1 h</h2><div class="mute"><span class="ttft">●</span> time to first token
+      <span class="mute">●</span> total</div><canvas id="cLat"></canvas></div>
+    <div class="card"><h2>Last hour · p50 / p95</h2><div class="kv">
+      <b>gen tok/s</b><span id="kTps">–</span><b>prompt tok/s</b><span id="kPp">–</span>
+      <b>first token</b><span id="kTtft">–</span><b>total</b><span id="kTot">–</span>
+      <b>queue wait</b><span id="kQ">–</span><b>model switch</b><span id="kSw">–</span></div>
+      <div class="mute" id="kTok" style="margin-top:6px"></div></div>
+  </div>
+  <div class="card wide"><h2>Queue</h2><table><thead><tr><th>#</th><th>job</th><th>requested</th>
+    <th>using</th><th>from</th><th>waiting</th></tr></thead><tbody id="q"></tbody></table></div>
+  <div class="card wide"><h2>Per model (24 h)</h2><table><thead><tr><th>model</th><th>done</th>
+    <th>failed</th><th>avg s</th><th>max s</th></tr></thead><tbody id="pm"></tbody></table></div>
+  <div class="card wide"><h2>Recent jobs</h2><table><thead><tr><th>when</th><th>job</th><th>requested</th>
+    <th>used</th><th>state</th><th>s</th><th>error</th></tr></thead><tbody id="rj"></tbody></table></div>
+  <div class="card wide"><h2>Events</h2><table><thead><tr><th>when</th><th>kind</th><th>job</th>
+    <th>detail</th></tr></thead><tbody id="ev"></tbody></table></div>
+  <div class="card wide"><h2>Downloads</h2><table><thead><tr><th>slug</th><th>ref</th><th>state</th>
+    <th>updated</th></tr></thead><tbody id="dl"></tbody></table></div>
+</main>
+<script src="/dash/dash.js"></script>
+<script src="/dash/live.js"></script>
+<script src="/dash/index.js"></script>
+</body>
+</html>

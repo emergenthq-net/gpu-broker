@@ -1,0 +1,20 @@
+# gpu-broker as a systemd service. Install:
+#   sudo cp examples/systemd/gpu-broker.service /etc/systemd/system/
+#   sudo install -m 600 /dev/null /etc/gpu-broker/broker.env   # then add BROKER_TOKEN=...
+#   sudo systemctl daemon-reload && sudo systemctl enable --now gpu-broker
+# Adjust ExecStart to where you installed the package.
+[Unit]
+Description=gpu-broker: one GPU, many models
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+EnvironmentFile=/etc/gpu-broker/broker.env
+ExecStart=/opt/gpu-broker/.venv/bin/gpu-broker serve
+Restart=on-failure
+# Shutdown closes open HTTP connections after server.graceful_shutdown_s (default 10 s) and
+# kills the GPU sample stream; keep this a little above that value.
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target

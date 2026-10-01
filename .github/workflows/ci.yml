@@ -1,0 +1,49 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.12", "3.13"]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0   # setup-uv publishes no floating major tag
+      - name: Install
+        run: |
+          uv venv --python ${{ matrix.python }} .venv
+          uv pip install --python .venv/bin/python -e '.[dev]'
+      - name: Ruff (incl. PLR2004 magic numbers, bandit security rules)
+        run: .venv/bin/ruff check .
+      - name: Mypy (strict)
+        run: .venv/bin/mypy
+      - name: Tests
+        run: .venv/bin/pytest -q tests
+      - name: JS syntax
+        run: for f in gpu_broker/web/static/*.js; do node --check "$f"; done
+      - name: Package builds with its dashboard assets
+        run: |
+          uv build --wheel --out-dir dist
+          test "$(python3 -m zipfile -l dist/*.whl | grep -cE 'gpu_broker/web/static/(dash\.html|dash\.js|live\.js|index\.js) ')" = 4
+
+  docker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - name: Build image
+        run: docker build -t gpu-broker:ci .
+      - name: Image loads the example config and catalog
+        run: |
+          docker run --rm -v "$PWD/examples:/etc/gpu-broker:ro" \
+            -e BROKER_CONFIG=/etc/gpu-broker/docker/config.yaml -e BROKER_CATALOG=/etc/gpu-broker/catalog.yaml \
+            --entrypoint gpu-broker gpu-broker:ci check

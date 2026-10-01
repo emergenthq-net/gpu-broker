@@ -1,0 +1,62 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "gpu-broker"
+version = "0.2.0"
+description = "Share one GPU between LLM servers and ComfyUI: a queue that swaps models in and out on demand."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12"
+authors = [{ name = "Ashwin Philips" }]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Framework :: FastAPI",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Operating System :: POSIX :: Linux",
+]
+dependencies = [
+    "fastapi>=0.115,<1",
+    "uvicorn>=0.30,<1",
+    "pyyaml>=6.0,<7",
+]
+
+[project.optional-dependencies]
+download = ["huggingface_hub>=0.34"]   # provides the `hf` CLI used for model downloads
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11", "types-PyYAML"]
+
+[project.scripts]
+gpu-broker = "gpu_broker.cli:main"
+
+[tool.setuptools]
+packages = ["gpu_broker", "gpu_broker.drivers", "gpu_broker.templates", "gpu_broker.web"]
+
+[tool.setuptools.package-data]
+gpu_broker = ["py.typed"]
+"gpu_broker.web" = ["static/*.html", "static/*.js"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 140
+target-version = "py312"
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+# PLR2004: no magic numbers in comparisons; S: bandit security checks; PL/SIM/RET/PTH-lite for idiom.
+select = ["E", "F", "W", "I", "B", "UP", "S", "PLR2004", "PLW", "SIM", "RET", "C4", "PIE", "BLE", "RUF"]
+ignore = ["E501", "B008", "UP037", "RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert on literal values by design, use `assert`, and import fixtures for reuse.
+"**/tests/*" = ["PLR2004", "S101", "S104", "S105", "S108", "S603", "S607", "PLW1510", "F811", "BLE001"]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+packages = ["gpu_broker"]
+warn_unreachable = true

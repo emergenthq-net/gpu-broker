@@ -1,0 +1,126 @@
+# Test catalog: shaped like a real one (two LLMs, ComfyUI image/video models, session-only
+# entries, models that need downloading or integration) but with neutral, public models.
+defaults:
+  resident: llama-8b
+  idle_restore_s: 120
+  session_idle_s: 900
+  session_yield_s: 120
+  session_max_s: 14400
+  background_requesters: [batch-agent]   # callers queued behind interactive chat by default
+  vram_total_mib: 24564
+  vram_reserve_mib: 600
+
+models:
+  llama-8b:
+    kind: llm
+    runner: llm_unit
+    unit: llama-8b
+    endpoint: http://127.0.0.1:8081
+    served_name: llama-3.1-8b-instruct-q4_k_m
+    auth_env: UPSTREAM_TOKEN_LLM
+    vram_mib: 7000
+    slots: 5
+    reserved_interactive: 1
+    variants:
+      llama-8b-precise: {temperature: 0.1}
+    caps: [chat, reasoning, code, long_context]
+    quality: 70
+    status: ready
+    aliases: [llama, llama-3.1-8b, llama-3.1-8b-instruct-q4_k_m]
+  qwen-coder-32b:
+    kind: llm
+    runner: llm_unit
+    unit: {name: qwen-coder}
+    endpoint: http://127.0.0.1:8082
+    served_name: qwen2.5-coder-32b-instruct-q4_k_m
+    vram_mib: 21000
+    caps: [chat, code]
+    quality: 60
+    status: ready
+    aliases: [qwen-32b, qwen2.5-coder-32b-instruct-q4_k_m]
+
+  sdxl-base:
+    kind: image
+    runner: comfy
+    template: sdxl
+    params: {ckpt: sd_xl_base_1.0.safetensors}
+    vram_mib: 9000
+    caps: [t2i, inpaint]
+    quality: 70
+    status: ready
+    source: {hf: stabilityai/stable-diffusion-xl-base-1.0, slug: sdxl-base}
+    aliases: [sdxl]
+  flux-schnell:
+    kind: image
+    runner: comfy
+    caps: [t2i]
+    quality: 80
+    vram_mib: 16000
+    status: needs_integration
+    source: {hf: black-forest-labs/FLUX.1-schnell, slug: flux-schnell}
+
+  wan2.2-14b-t2v:
+    comfy_template: video_wan2_2_14B_t2v
+    kind: video
+    runner: comfy
+    template: wan14b
+    params: {mode: t2v}
+    vram_mib: 23000
+    caps: [t2v]
+    quality: 85
+    status: ready
+    aliases: [wan14b]
+  wan2.2-14b-style:
+    kind: video
+    runner: comfy
+    template: wan14b
+    params: {mode: t2v, extra_loras: [style-high.safetensors, style-low.safetensors]}
+    vram_mib: 23500
+    caps: [t2v, style]
+    quality: 84
+    status: ready
+  wan2.2-5b:
+    comfy_template: video_wan2_2_5B_ti2v
+    kind: video
+    runner: comfy
+    template: wan5b
+    vram_mib: 23000
+    caps: [t2v]
+    quality: 70
+    status: ready
+    aliases: [wan5b]
+  ltx-video:
+    kind: video
+    runner: comfy
+    vram_mib: 20000
+    caps: [t2v, i2v, style, fast]
+    quality: 80
+    status: needs_integration
+    source: {hf: Lightricks/LTX-Video, slug: ltx-video, include: ["ltxv-2b-0.9.8-distilled.safetensors"]}
+
+  anysplat:
+    kind: 3d
+    runner: external
+    caps: [video_to_splat, images_to_splat]
+    vram_mib: 12000
+    quality: 80
+    status: needs_integration
+    source: {hf: lhjiang/anysplat, slug: anysplat}
+  triposplat:
+    comfy_template: 3d_triposplat_image_to_gaussian_splat
+    session_only: true
+    kind: 3d
+    runner: comfy
+    caps: [image_to_splat]
+    vram_mib: 16000
+    quality: 78
+    status: ready
+  swarmui:
+    open_url: http://127.0.0.1:7801
+    session_only: true
+    kind: ui
+    runner: comfy
+    caps: [frontend]
+    vram_mib: 23000
+    quality: 90
+    status: ready

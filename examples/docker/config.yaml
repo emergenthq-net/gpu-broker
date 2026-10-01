@@ -1,0 +1,14 @@
+# gpu-broker config for examples/docker/compose.yaml — Docker driver.
+# All services use host networking, so the catalog's 127.0.0.1 endpoints work unchanged.
+catalog: /etc/gpu-broker/catalog.yaml
+db: /var/lib/gpu-broker/broker.db
+events_jsonl: /var/lib/gpu-broker/events.jsonl
+comfy:
+  url: http://127.0.0.1:8188
+  unit: comfyui                 # container name
+driver:
+  kind: docker                  # needs /var/run/docker.sock mounted into the broker
+  models_root: /models          # shared volume; also mounted into llama-server and ComfyUI
+  comfy_models_dir: /comfy-models
+ui:
+  gpu_label: GPU

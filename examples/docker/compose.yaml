@@ -1,0 +1,59 @@
+# gpu-broker + ComfyUI + llama.cpp sharing one NVIDIA GPU (needs the NVIDIA Container Toolkit).
+#
+#   mkdir -p conf data models && cp config.yaml ../catalog.yaml conf/
+#   sudo chown -R 10001:10001 conf data     # the broker runs as uid 10001 and rewrites catalog.yaml
+#   echo "BROKER_TOKEN=$(openssl rand -hex 24)" > .env
+#   echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> .env
+#   docker compose up -d                    # then open http://localhost:8095/dash
+#
+# The broker only starts/stops the llama-server and comfyui containers; it never creates them.
+# Download the model files first (POST /v1/jobs for a `downloadable` model does it too).
+services:
+  gpu-broker:
+    build: ../..
+    image: gpu-broker:latest
+    network_mode: host
+    environment:
+      BROKER_TOKEN: ${BROKER_TOKEN:?set BROKER_TOKEN in .env}
+    command: ["serve"]                  # binds server.host from conf/config.yaml (127.0.0.1 on the host network)
+    group_add: ["${DOCKER_GID:-999}"]   # access to the docker socket
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./conf:/etc/gpu-broker
+      - ./data:/var/lib/gpu-broker
+      - ./models:/models
+      - comfy-models:/comfy-models
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [utility]}]   # nvidia-smi only
+    restart: unless-stopped
+
+  llama-server:
+    container_name: llama-server
+    image: ghcr.io/ggml-org/llama.cpp:server-cuda
+    network_mode: host
+    command: ["-m", "/models/llama-3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "--alias", "llama-3.1-8b-instruct",
+              "--host", "127.0.0.1", "--port", "8080", "-ngl", "99", "-np", "4", "-c", "32768"]
+    volumes: ["./models:/models:ro"]
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    restart: "no"                       # the broker decides when it runs
+
+  comfyui:
+    container_name: comfyui
+    image: ${COMFYUI_IMAGE:-yanwk/comfyui-boot:cu126-megapak}   # any ComfyUI image serving :8188
+    network_mode: host
+    volumes:
+      - comfy-models:/root/ComfyUI/models
+      - ./models:/models:ro
+    deploy:
+      resources:
+        reservations:
+          devices: [{driver: nvidia, count: all, capabilities: [gpu]}]
+    restart: unless-stopped
+
+volumes:
+  comfy-models:
