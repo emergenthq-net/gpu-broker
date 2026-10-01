@@ -11,7 +11,7 @@ def chat(c, model, **extra):
 
 
 def test_every_data_route_needs_the_token(client):
-    for path in ("/v1/status", "/v1/events", "/v1/models", "/v1/catalog", "/v1/gpu", "/v1/ui", "/v1/metrics", "/v1/stats"):
+    for path in ("/v1/status", "/v1/events", "/v1/models", "/v1/catalog", "/v1/gpu", "/v1/ui", "/v1/metrics", "/v1/stats", "/v1/system"):
         for header in ("Bearer nope", f"bearer {TOKEN}", f"Bearer {TOKEN} ", TOKEN, ""):
             assert client.get(path, headers={"Authorization": header}).status_code == 401, (path, header)
         assert client.get(path).status_code == 200, path
@@ -98,6 +98,9 @@ def test_dashboard_data(client, broker):
     assert ui["comfy_url"] == broker.settings.comfy.url and ui["power_max_w"] == broker.settings.ui.power_max_w
     m = client.get("/v1/metrics").json()
     assert m["jobs"] and m["summary"]["jobs"] == len(m["jobs"])
+    system = client.get("/v1/system").json()
+    assert system["resource"]["id"] == "gpu:0" and system["scheduler"]["policy"] == broker.settings.scheduling.policy
+    assert system["catalog"]["models"] == len(broker.catalog.models) and "/v1/embeddings" in system["runtime"]["json_routes"]
 
 
 def test_openai_model_list_is_ready_llms_and_their_variants(client):
@@ -157,3 +160,27 @@ def test_a_session_only_model_can_be_borrowed_but_not_queued(client, broker):
     assert client.post("/v1/jobs", json={"model": key, "prompt": "x"}).json()["job"]["state"] == JobState.REJECTED
     r = client.post("/v1/sessions", json={"model": key, "idle_min": 0.0001}).json()
     assert r["resolved"] == key and done(broker, r["id"])["state"] == JobState.DONE
+
+
+
+def test_json_compatibility_routes_share_the_scheduler(client, broker):
+    cases = [
+        ("/v1/completions", {"prompt": "hi"}, "text_completion"),
+        ("/v1/responses", {"input": "hi"}, "response"),
+        ("/v1/embeddings", {"input": "hi"}, "list"),
+        ("/v1/rerank", {"query": "hi", "documents": ["x"]}, None),
+        ("/v1/score", {"text_1": "hi", "text_2": "x"}, None),
+    ]
+    for path, payload, obj in cases:
+        r = client.post(path, json={"model": "llama-8b", **payload})
+        assert r.status_code == 200, (path, r.text)
+        body = r.json()
+        assert body["x_broker"]["used"] == "llama-8b"
+        if obj is not None:
+            assert body["object"] == obj
+    assert broker.backends.paths[-5:] == [p for p, _, _ in cases]
+
+
+def test_non_chat_compatibility_routes_reject_streaming(client):
+    r = client.post("/v1/responses", json={"model": "llama-8b", "input": "hi", "stream": True})
+    assert r.status_code == 400 and "streaming" in r.json()["detail"]
