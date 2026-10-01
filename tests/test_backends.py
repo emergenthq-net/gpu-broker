@@ -137,3 +137,59 @@ def test_llm_request_never_becomes_an_arbitrary_proxy(http):
     with pytest.raises(ValueError, match="unsupported LLM API path"):
         backends().llm_request(MODEL, "/admin/delete-everything", {})
     assert http[0] == []
+
+
+
+def test_vllm_sleep_lifecycle_uses_fixed_internal_controls(http):
+    seen, routes = http
+    sleeping = {"value": True}
+    model = {**MODEL, "residency": "vllm_sleep"}
+
+    routes["/is_sleeping"] = lambda req: Resp(sleeping["value"])
+
+    def wake(req):
+        assert req.method == "POST" and req.data is None
+        sleeping["value"] = False
+        return Resp({})
+    routes["/wake_up"] = wake
+
+    def sleep(req):
+        assert req.method == "POST" and "level=1" in req.full_url
+        sleeping["value"] = True
+        return Resp({})
+    routes["/sleep?level=1"] = sleep
+
+    b = backends()
+    assert b.llm_api_resident(model) is False
+    b.llm_api_activate(model)
+    assert b.llm_api_resident(model) is True
+    b.llm_api_deactivate(model)
+    assert b.llm_api_resident(model) is False
+    assert all(req.full_url.startswith(MODEL["endpoint"]) for req in seen)
+
+
+def test_ollama_lifecycle_loads_only_catalog_served_name(http):
+    seen, routes = http
+    loaded = set()
+    model = {**MODEL, "residency": "ollama", "served_name": "qwen3:8b"}
+
+    routes["/api/version"] = {"version": "0.14.0"}
+    routes["/api/ps"] = lambda req: Resp({"models": [{"name": name, "model": name} for name in loaded]})
+
+    def chat(req):
+        body = json.loads(req.data)
+        assert body["model"] == "qwen3:8b" and body["messages"] == [] and body["stream"] is False
+        if body["keep_alive"] == 0:
+            loaded.discard(body["model"])
+        else:
+            loaded.add(body["model"])
+        return Resp({"done": True})
+    routes["/api/chat"] = chat
+
+    b = backends()
+    assert b.llm_healthy(model) is True and b.llm_api_resident(model) is False
+    b.llm_api_activate(model)
+    assert b.llm_api_resident(model) is True
+    b.llm_api_deactivate(model)
+    assert b.llm_api_resident(model) is False
+    assert {req.full_url.removeprefix(MODEL["endpoint"]) for req in seen} <= {"/api/version", "/api/ps", "/api/chat"}
