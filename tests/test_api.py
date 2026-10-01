@@ -184,3 +184,24 @@ def test_json_compatibility_routes_share_the_scheduler(client, broker):
 def test_non_chat_compatibility_routes_reject_streaming(client):
     r = client.post("/v1/responses", json={"model": "llama-8b", "input": "hi", "stream": True})
     assert r.status_code == 400 and "streaming" in r.json()["detail"]
+
+
+def test_resolve_is_explainable_and_side_effect_free(client, broker):
+    before_jobs = len(broker.store.jobs(100))
+    before_models = set(broker.catalog.models)
+    r = client.post("/v1/resolve", json={"model": "ltx-video", "caps": ["t2v", "style"]})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["resolved"] == "wan2.2-14b-style" and body["substitution"]
+    assert body["selected"]["kind"] == "video" and body["selected"]["runner"] == "comfy"
+    assert len(broker.store.jobs(100)) == before_jobs
+
+    unknown = client.post("/v1/resolve", json={"model": "someone/New-Video", "kind": "video", "caps": ["t2v"]}).json()
+    assert unknown["download"]["ref"] == "someone/New-Video"
+    assert set(broker.catalog.models) == before_models
+    assert broker.store.download("someone-new-video") is None
+
+
+def test_resolve_requires_auth(client):
+    r = client.post("/v1/resolve", json={"model": "llama"}, headers={"Authorization": "Bearer nope"})
+    assert r.status_code == 401
