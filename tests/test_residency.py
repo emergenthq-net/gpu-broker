@@ -86,3 +86,50 @@ def test_start_failures_and_health_timeouts_raise(res):
     res.backends.llm_healthy = lambda m: False
     with pytest.raises(RuntimeError, match="did not become healthy"):
         res.ensure("qwen-coder-32b")
+
+
+
+def add_api_model(res, key, mode, unit, served):
+    res.catalog.models[key] = {
+        "kind": "llm", "runner": "llm_unit", "status": "ready", "unit": unit,
+        "endpoint": f"http://{unit}:8000", "served_name": served, "residency": mode,
+        "vram_mib": 8000, "caps": ["chat"], "quality": 10,
+    }
+
+
+def test_detect_api_managed_runtime_requires_model_to_be_resident(res):
+    add_api_model(res, "vllm-test", "vllm_sleep", "vllm-test", "served-vllm")
+    res.driver.active = {"vllm-test"}
+    assert res.detect() is None
+    res.backends.api_resident.add("served-vllm")
+    assert res.detect() == "vllm-test"
+
+
+def test_vllm_sleep_keeps_server_up_when_gpu_moves_to_comfy(res):
+    add_api_model(res, "vllm-test", "vllm_sleep", "vllm-test", "served-vllm")
+    res.driver.active.add("vllm-test")
+    res.ensure("vllm-test")
+    assert res.current == "vllm-test" and "vllm-test" in res.driver.active
+    assert res.backends.lifecycle[-1] == ("activate", "served-vllm")
+
+    res.ensure("sdxl-base")
+    assert res.current is None and "vllm-test" in res.driver.active
+    assert res.backends.lifecycle[-1] == ("deactivate", "served-vllm")
+
+
+def test_ollama_switches_models_without_restarting_shared_daemon(res):
+    add_api_model(res, "ollama-a", "ollama", "ollama", "model-a")
+    add_api_model(res, "ollama-b", "ollama", "ollama", "model-b")
+    res.driver.active.add("ollama")
+
+    res.ensure("ollama-a")
+    calls_after_first = [call for call in res.driver.calls if call[1] == "ollama"]
+    assert res.current == "ollama-a" and res.backends.api_resident == {"model-a"}
+
+    res.ensure("ollama-b")
+    calls_after_second = [call for call in res.driver.calls if call[1] == "ollama"]
+    assert res.current == "ollama-b" and res.backends.api_resident == {"model-b"}
+    # The daemon is queried for liveness, but never stopped/restarted during a model swap.
+    assert not any(verb == "stop" for verb, _ in calls_after_second)
+    assert "ollama" in res.driver.active
+    assert len(calls_after_second) >= len(calls_after_first)
