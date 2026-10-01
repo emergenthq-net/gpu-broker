@@ -80,6 +80,11 @@ class HttpBackends:
         except (OSError, ValueError):  # refused, reset, timed out, HTTP error: all mean "not ready"
             return False
 
+    def _send(self, req: urllib.request.Request, timeout: float) -> None:
+        """Send a control request whose successful response body may be empty."""
+        with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — built by _request
+            if r.status < HTTPStatus.OK or r.status >= HTTPStatus.BAD_REQUEST:
+                raise RuntimeError(f"backend control request failed with HTTP {r.status}")
     def _auth(self, model: Model) -> dict[str, str]:
         return {"Authorization": f"{AUTH_SCHEME} {self.tokens.get(model.get('auth_env', ''), '')}"}
 
@@ -110,7 +115,7 @@ class HttpBackends:
     def llm_api_activate(self, model: Model) -> None:
         mode = ResidencyMode(model.get("residency", ResidencyMode.UNIT))
         if mode == ResidencyMode.VLLM_SLEEP:
-            self._json(_request(model["endpoint"] + VLLM_WAKE, headers=self._auth(model), method="POST"), self.t.llm_start_s)
+            self._send(_request(model["endpoint"] + VLLM_WAKE, headers=self._auth(model), method="POST"), self.t.llm_start_s)
             return
         if mode == ResidencyMode.OLLAMA:
             body = {"model": model["served_name"], "messages": [], "keep_alive": -1, "stream": False}
@@ -121,7 +126,7 @@ class HttpBackends:
     def llm_api_deactivate(self, model: Model) -> None:
         mode = ResidencyMode(model.get("residency", ResidencyMode.UNIT))
         if mode == ResidencyMode.VLLM_SLEEP:
-            self._json(_request(model["endpoint"] + VLLM_SLEEP, headers=self._auth(model), method="POST"), self.t.llm_start_s)
+            self._send(_request(model["endpoint"] + VLLM_SLEEP, headers=self._auth(model), method="POST"), self.t.llm_start_s)
             return
         if mode == ResidencyMode.OLLAMA:
             body = {"model": model["served_name"], "messages": [], "keep_alive": 0, "stream": False}
