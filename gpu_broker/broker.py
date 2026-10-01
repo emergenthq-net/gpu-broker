@@ -89,7 +89,7 @@ class Broker:
     def submit(self, body: Mapping[str, Any], requester: str) -> tuple[str, dict[str, Any]]:
         """Resolve, record and queue a request; returns (job id, what the caller needs to know)."""
         validate_request(body)
-        name = body.get("model") or self.catalog.defaults["resident"]
+        name = body.get("model") or ("auto" if body.get("kind") or body.get("caps") else self.catalog.defaults["resident"])
         r = resolve(self.catalog.data, name, body.get("kind"), body.get("caps"), session=bool(body.get(SESSION_KEY)))
         jid = self.store.create_job(requester[:REQUESTER_MAX], name, dict(body))
         info: dict[str, Any] = {"requested": name, "resolved": r.resolved, "substitution": r.substitution, "notes": r.notes}
