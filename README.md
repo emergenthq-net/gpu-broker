@@ -231,22 +231,25 @@ is [`examples/config.yaml`](examples/config.yaml). Every config key and its defa
 
 Every route except `/health` and the dashboard page needs `Authorization: Bearer $BROKER_TOKEN`.
 
-| endpoint | |
+| endpoint | purpose |
 |---|---|
-| `POST /v1/chat/completions` | OpenAI-compatible. Interactive callers on the resident model are served directly; with `stream: true` the tokens stream as they are generated. Other calls are queued, and a queued call answered with `stream: true` arrives as a single SSE chunk. Broker details are in `x_broker`. |
-| `POST /v1/jobs` | `{model, kind?, caps?, prompt?/messages?, ...params, wait?, wait_s?}`. Returns `requested`, `resolved`, `substitution`, `queue_position` and `download`. |
-| `GET /v1/jobs/{id}` | The job's state, the model it used, and its outputs. |
-| `GET /v1/models` | Ready LLMs and their variants (OpenAI format). |
-| `GET /v1/catalog`, `/v1/status`, `/v1/events?since=N` | The catalog, current residency and queue, and the event log. |
-| `GET /v1/gpu`, `/v1/metrics`, `/v1/stats`, `/v1/ui` | Dashboard data: GPU reading, live samples with job latency and tok/s, per-model stats, labels. |
-| `POST /v1/sessions`, `/v1/sessions/end` | Borrow the GPU for interactive ComfyUI, and give it back. |
-| `POST /v1/admin/quiesce`, `/v1/admin/resume` | Drain in-flight calls before a restart, and undo that. |
-| `GET /health`, `GET /dash` | Liveness check (no auth) and the dashboard. |
+| `POST /v1/chat/completions` | OpenAI-compatible chat. Interactive callers on the resident model are served directly; `stream: true` relays tokens as generated. |
+| `POST /v1/completions`, `/v1/responses` | Non-streamed generation through the same model resolution and residency scheduler. |
+| `POST /v1/embeddings`, `/v1/rerank`, `/v1/score` | Non-streamed compatibility routes for servers/models that implement them. |
+| `POST /v1/resolve` | Explain which model would run and why, with no execution or download side effects. |
+| `POST /v1/jobs` | Native durable job API. Accepts exact `model` or capability-first `kind` + `caps` / `model:auto`. |
+| `GET /v1/jobs/{id}` | Job state, queue position, model used and outputs. |
+| `GET /v1/models` | Ready LLMs and their variants in OpenAI format. |
+| `GET /v1/catalog`, `/v1/status`, `/v1/system` | Catalog, operational state, and control-plane inventory/policy. |
+| `GET /v1/events?since=N` | Ordered event log. |
+| `GET /v1/gpu`, `/v1/metrics`, `/v1/stats`, `/v1/ui` | GPU samples, latency/throughput metrics, aggregates and UI labels. |
+| `POST /v1/sessions`, `/v1/sessions/end` | Borrow the GPU for interactive ComfyUI and return it. |
+| `POST /v1/admin/quiesce`, `/v1/admin/resume` | Stop admitting work, drain/hold the direct path, and resume. |
+| `GET /health`, `GET /dash` | Unauthenticated liveness and static control-plane shell. |
 
-Two optional headers on chat requests:
+Two optional headers on inference requests:
 - `x-requester` labels the caller.
-- `x-priority: interactive|background` overrides the catalog's `background_requesters`.
-
+- `x-priority: interactive|normal|background` declares queue priority. Background callers cannot consume slots reserved for people.
 ## How it works
 
 - **One GPU thread, FIFO.** Residency changes only between jobs, never mid-job.
