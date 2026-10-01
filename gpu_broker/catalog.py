@@ -14,7 +14,7 @@ from urllib.parse import urlsplit
 
 import yaml
 
-from .constants import BROKER_FIELDS, OPENAI_JSON_PATHS, ModelStatus, Runner
+from .constants import BROKER_FIELDS, OPENAI_JSON_PATHS, ModelStatus, ResidencyMode, Runner
 from .units import UnitRef, unit_ref
 
 URL_SCHEMES = frozenset({"http", "https"})
@@ -35,6 +35,7 @@ class Model(TypedDict, total=False):
     unit: Any                  # unit spec, see units.py
     endpoint: str              # OpenAI-compatible base URL (llm_unit)
     served_name: str
+    residency: str             # unit (default) | vllm_sleep | ollama
     health_path: str          # GET readiness path; default /health
     metrics_path: str         # optional observability path, e.g. /metrics
     api_paths: list[str]      # optional explicit subset of supported broker JSON paths
@@ -81,6 +82,13 @@ def validate(data: CatalogData) -> None:
             raise ValueError(f"{key}: unknown runner {m.get('runner')!r}")
         if m.get("status") not in {s.value for s in ModelStatus}:
             raise ValueError(f"{key}: unknown status {m.get('status')!r}")
+        residency = m.get("residency", ResidencyMode.UNIT)
+        if residency not in {mode.value for mode in ResidencyMode}:
+            raise ValueError(f"{key}: unknown residency mode {residency!r}")
+        if residency != ResidencyMode.UNIT and m.get("runner") != Runner.LLM_UNIT:
+            raise ValueError(f"{key}: residency mode {residency!r} requires runner llm_unit")
+        if residency != ResidencyMode.UNIT and not all(k in m for k in ("unit", "endpoint", "served_name")):
+            raise ValueError(f"{key}: residency mode {residency!r} requires unit, endpoint and served_name")
         if "unit" in m:
             unit_ref(m["unit"])
         slots = int(m.get("slots", 1))
