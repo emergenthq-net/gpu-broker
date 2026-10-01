@@ -39,32 +39,45 @@ sequenceDiagram
 
 ## Features
 
-- **Queue and residency:** one GPU worker runs jobs in order and swaps models only between jobs.
-- **LLMs and ComfyUI on one card:** an image or video job stops the LLM; idle restore brings it back.
+- **Capability routing:** request a model by name, or ask for `kind` + `caps` and let `model: auto` choose the best runnable implementation.
+- **Residency-aware scheduling:** `balanced` priority + aging + locality avoids needless switches without starving old work; strict `fifo` remains available.
 - **Fast lane for people:** interactive chat on the resident model skips the queue and streams token by token.
-- **OpenAI-compatible:** `/v1/chat/completions` and `/v1/models`, so existing chat UIs work unchanged.
-- **Substitution:** an unknown, missing or too-large model runs on the best installed match, and the job says why.
-- **Downloads:** ask for a Hugging Face repo or a GitHub URL and it is fetched in the background.
-- **Interactive ComfyUI sessions:** borrow the whole GPU from the dashboard; it is returned when you go idle.
+- **OpenAI-style API surface:** chat, completions, Responses, embeddings, rerank and score share the same routing and residency machinery.
+- **Runtime contracts:** managed servers may declare their health path and supported API paths instead of being hard-coded to one server implementation.
+- **Substitution with reasons:** unknown, unavailable, incompatible or too-large models resolve to the best installed capability match and report why.
+- **Explain before executing:** `POST /v1/resolve` performs the same routing decision with no job, GPU switch or download side effect.
+- **LLMs and ComfyUI on one card:** image/video jobs safely drain and release LLM residency; idle restore brings the default model back.
+- **Durable operations:** SQLite job states, queue positions, downloads, events and JSONL audit log survive outside the UI.
+- **Interactive ComfyUI sessions:** borrow the GPU from the control plane and return it automatically on idle.
 - **Three host drivers:** systemd units, Docker containers, or systemd units inside Proxmox LXCs.
+- **Operator control plane:** responsive dashboard for residency, scheduler state, capabilities, models, live GPU telemetry, queue, jobs and admin quiesce/resume.
 
 ### Compared with llama-swap
 
-[llama-swap](https://github.com/mostlygeek/llama-swap) is excellent if all you run is
-OpenAI-compatible LLM servers. gpu-broker is for the case llama-swap does not cover:
+[llama-swap](https://github.com/mostlygeek/llama-swap) is a focused, mature proxy for
+swapping model servers. Its scope now includes multiple kinds of local inference servers,
+including ComfyUI integrations. gpu-broker overlaps with that lifecycle problem, but its
+center of gravity is different: **requests become inspectable jobs in a capability-aware
+control plane**.
 
-| | llama-swap | gpu-broker |
+| capability | llama-swap | gpu-broker |
 |---|---|---|
-| Swap between LLM servers on request | yes | yes |
-| LLMs and ComfyUI share one GPU | – | yes |
-| Queue with positions, job states and an event log | – | yes (SQLite + JSONL) |
-| Substitution, with the reason reported | – | yes |
-| Downloads by Hugging Face repo or GitHub URL | – | yes |
-| Interactive GPU sessions for ComfyUI | – | yes |
-| Concurrent calls to the resident LLM | proxied | up to `slots`, some reserved for people |
-| Where model servers live | processes it launches | systemd units, Docker containers, Proxmox LXCs |
+| Swap managed model servers | yes | yes |
+| OpenAI-compatible proxying | yes | yes |
+| Durable job queue, states and event log | proxy-oriented | yes (SQLite + JSONL) |
+| Capability-first `auto` routing | – | yes |
+| Substitution with an explicit reason | – | yes |
+| Priority + starvation aging + residency locality | – | yes |
+| Side-effect-free routing explanation | – | `POST /v1/resolve` |
+| ComfyUI graph execution as queued jobs | integration-dependent | bundled graph builders |
+| Interactive whole-GPU sessions | – | yes |
+| Model downloads tracked as operations | – | yes |
+| Host lifecycle drivers | process/server oriented | systemd, Docker, Proxmox |
+| Unified GPU/job/operator telemetry | – | built-in control plane |
 
-If you only swap LLMs, use llama-swap. If one card has to serve chat *and* diffusion, use this.
+If you need a lightweight model-server swap proxy, llama-swap is an excellent fit. If you
+need the GPU treated as a schedulable resource with durable jobs, capability resolution and
+operator state, gpu-broker is aimed at that layer.
 
 ## Quickstart
 
