@@ -12,9 +12,11 @@ SESSION_KEY = "session"                   # job payload flag: an interactive ses
 REQUESTER_HEADER = "x-requester"          # optional caller label on /v1/chat/completions
 PRIORITY_HEADER = "x-priority"            # interactive | background; overrides defaults.background_requesters
 INTERACTIVE_KEY = "interactive"           # job payload flag: a person is waiting (may use reserved slots)
+PRIORITY_KEY = "priority"                  # interactive | normal | background; queued scheduler policy
+OPENAI_PATH_KEY = "_openai_path"           # internal route chosen by the compatibility API; never forwarded
 # Request fields the broker consumes itself; never forwarded to a model server.
 BROKER_FIELDS = frozenset({"model", "stream", "kind", "caps", "requester", "wait", "wait_s",
-                           INTERACTIVE_KEY, SESSION_KEY})
+                           INTERACTIVE_KEY, PRIORITY_KEY, OPENAI_PATH_KEY, SESSION_KEY})
 AUTH_SCHEME = "Bearer"
 
 
@@ -54,7 +56,8 @@ class ModelStatus(StrEnum):
 
 
 class Priority(StrEnum):
-    INTERACTIVE = "interactive"   # a person waiting in a chat UI: may skip the queue
+    INTERACTIVE = "interactive"   # a person waiting in a UI: may skip the queue when already resident
+    NORMAL = "normal"             # ordinary queued work
     BACKGROUND = "background"     # agents and batch work: queued, kept off reserved slots
 
 
