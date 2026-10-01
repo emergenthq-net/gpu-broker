@@ -9,8 +9,8 @@ TOKEN_ENV = "BROKER_TOKEN"  # noqa: S105 — the env var NAME holding the API to
 UPSTREAM_TOKEN_PREFIX = "UPSTREAM_TOKEN_"  # noqa: S105 — prefix of env vars holding model-server keys (catalog auth_env)
 OWNER = APP_NAME                          # `owned_by` in the OpenAI model list
 SESSION_KEY = "session"                   # job payload flag: an interactive session, not a queued run
-REQUESTER_HEADER = "x-requester"          # optional caller label on /v1/chat/completions
-PRIORITY_HEADER = "x-priority"            # interactive | background; overrides defaults.background_requesters
+REQUESTER_HEADER = "x-requester"          # optional caller label on inference requests
+PRIORITY_HEADER = "x-priority"            # interactive | normal | background; overrides requester defaults
 INTERACTIVE_KEY = "interactive"           # job payload flag: a person is waiting (may use reserved slots)
 PRIORITY_KEY = "priority"                  # interactive | normal | background; queued scheduler policy
 OPENAI_PATH_KEY = "_openai_path"           # internal route chosen by the compatibility API; never forwarded
@@ -43,6 +43,12 @@ class DownloadState(StrEnum):
 
 
 ACTIVE_DOWNLOADS = frozenset({DownloadState.QUEUED, DownloadState.RUNNING, DownloadState.DONE})
+
+
+class ResidencyMode(StrEnum):
+    UNIT = "unit"                 # start/stop the model server process/container
+    VLLM_SLEEP = "vllm_sleep"     # keep vLLM server alive; use its sleep/wake dev endpoints
+    OLLAMA = "ollama"             # keep shared Ollama daemon alive; load/unload this catalog model
 
 
 class Runner(StrEnum):
