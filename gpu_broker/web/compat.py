@@ -29,7 +29,7 @@ def router(broker: Broker) -> APIRouter:
             raise HTTPException(HTTPStatus.BAD_REQUEST, "model is required")
         requester = request.headers.get(REQUESTER_HEADER) or client(request)
         priority = request_priority(broker.catalog, request.headers.get(PRIORITY_HEADER, ""), requester)
-        payload = {**apply_variant(broker.catalog, body), OPENAI_PATH_KEY: path, PRIORITY_KEY: priority.value}
+        payload = {**apply_variant(broker.catalog, body), "kind": body.get("kind", "llm"),\n                   OPENAI_PATH_KEY: path, PRIORITY_KEY: priority.value}
         jid, info = broker.submit(payload, requester)
         meta = {"job": jid, **info}
         if info.get("error"):
