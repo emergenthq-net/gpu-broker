@@ -6,7 +6,8 @@
 #           external (downloaded, but nothing can run it yet)
 # unit:     what the driver starts/stops: a systemd unit, a Docker container name, or
 #           {name: <unit>, target: <ct id>} for the Proxmox driver
-# health_path: optional readiness GET path for llm_unit (default /health)
+# residency: unit (default), vllm_sleep, or ollama; see RUNTIMES.md
+# health_path: optional readiness GET path for llm_unit (default /health; Ollama defaults /api/version)
 # api_paths: optional explicit subset of broker compatibility routes the server implements
 # metrics_path: optional runtime observability endpoint metadata (for future ingestion)
 # vram_mib: peak VRAM; models over (vram_total_mib - vram_reserve_mib) are never loaded
