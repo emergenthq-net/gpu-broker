@@ -137,11 +137,18 @@ def resolve(catalog: CatalogData, name: str, kind: str | None = None, caps: list
         return _unknown(catalog, name, kind, capset)
     m = catalog["models"][key]
     kind = kind or m.get("kind", "")
-    capset = capset or set(m.get("caps", []))
-    if runnable(catalog, key, session):
+    capset = set(m.get("caps", [])) if caps is None else set(caps)
+    missing = capset - set(m.get("caps", []))
+    wrong_kind = bool(kind and m.get("kind") != kind)
+    if runnable(catalog, key, session) and not wrong_kind and not missing:
         return Resolution(requested=name, resolved=key)
     res = Resolution(requested=name, resolved=None)
-    why = _why_not(catalog, key, m, res)
+    if wrong_kind:
+        why = f"is kind {m.get('kind')!r}, not requested kind {kind!r}"
+    elif missing:
+        why = f"does not provide capabilities {sorted(missing)}"
+    else:
+        why = _why_not(catalog, key, m, res)
     sub = best_substitute(catalog, kind, capset, exclude=key)
     if sub:
         res.resolved, res.substitution = sub, f"'{key}' {why}; using '{sub}' instead"
