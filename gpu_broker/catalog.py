@@ -7,17 +7,20 @@ an endpoint, so a request can never make the broker contact a new address.
 from __future__ import annotations
 
 import os
+import re
 import threading
 from typing import Any, NotRequired, TypedDict
 from urllib.parse import urlsplit
 
 import yaml
 
-from .constants import BROKER_FIELDS, ModelStatus, Runner
+from .constants import BROKER_FIELDS, OPENAI_JSON_PATHS, ModelStatus, Runner
 from .units import UnitRef, unit_ref
 
 URL_SCHEMES = frozenset({"http", "https"})
 TMP_SUFFIX = ".tmp"
+HTTP_PATH = re.compile(r"^/[A-Za-z0-9._~!TMP_SUFFIX = ".tmp"
+\'()*+,;=:@%/-]*$")
 
 
 class Source(TypedDict, total=False):
@@ -34,6 +37,9 @@ class Model(TypedDict, total=False):
     unit: Any                  # unit spec, see units.py
     endpoint: str              # OpenAI-compatible base URL (llm_unit)
     served_name: str
+    health_path: str          # GET readiness path; default /health
+    metrics_path: str         # optional observability path, e.g. /metrics
+    api_paths: list[str]      # optional explicit subset of supported broker JSON paths
     auth_env: str              # env var holding the server's API key
     slots: int                 # concurrent calls the server accepts
     reserved_interactive: int  # of those, slots background work may never take
@@ -91,6 +97,11 @@ def validate(data: CatalogData) -> None:
         for url_key in ("endpoint", "open_url"):
             if url_key in m and urlsplit(m[url_key]).scheme not in URL_SCHEMES:
                 raise ValueError(f"{key}: {url_key} must be an http(s) URL")
+        for path_key in ("health_path", "metrics_path"):
+            if path_key in m and not HTTP_PATH.fullmatch(m[path_key]):
+                raise ValueError(f"{key}: {path_key} must be an absolute HTTP path")
+        if bad_paths := set(m.get("api_paths", [])) - OPENAI_JSON_PATHS:
+            raise ValueError(f"{key}: unsupported api_paths {sorted(bad_paths)}")
 
 
 class Catalog:
