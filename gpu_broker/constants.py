@@ -18,6 +18,8 @@ OPENAI_PATH_KEY = "_openai_path"           # internal route chosen by the compat
 BROKER_FIELDS = frozenset({"model", "stream", "kind", "caps", "requester", "wait", "wait_s",
                            INTERACTIVE_KEY, PRIORITY_KEY, OPENAI_PATH_KEY, SESSION_KEY})
 AUTH_SCHEME = "Bearer"
+CHAT_PATH = "/v1/chat/completions"
+OPENAI_JSON_PATHS = frozenset({CHAT_PATH, "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/rerank", "/v1/score"})
 
 
 class JobState(StrEnum):
