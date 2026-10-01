@@ -103,3 +103,15 @@ def test_known_model_must_cover_explicit_capabilities(cat):
 def test_explicit_empty_capability_set_does_not_infer_all_model_caps(cat):
     r = resolve(cat, "sdxl-base", caps=[])
     assert r.resolved == "sdxl-base"
+
+
+def test_auto_routes_by_kind_and_capability(cat):
+    r = resolve(cat, "auto", kind="video", caps=["t2v", "style"])
+    assert r.resolved == "wan2.2-14b-style"
+    assert "auto-selected" in r.substitution
+
+
+def test_auto_requires_kind_and_rejects_impossible_caps(cat):
+    assert "requires `kind`" in resolve(cat, "auto", caps=["chat"]).error
+    r = resolve(cat, "auto", kind="video", caps=["does-not-exist"])
+    assert r.resolved is None and "no installed video model" in r.error
