@@ -1,11 +1,14 @@
 # gpu-broker model catalog — one entry per requestable model.
 #
 # kind:     llm | image | video | 3d | ui
-# runner:   llm_unit (an OpenAI-compatible server the driver starts/stops, e.g. llama.cpp)
+# runner:   llm_unit (a managed OpenAI-compatible server: llama.cpp, vLLM, SGLang, TRT-LLM, etc.)
 #           comfy    (a ComfyUI graph from gpu_broker/templates/, run on the shared ComfyUI)
 #           external (downloaded, but nothing can run it yet)
 # unit:     what the driver starts/stops: a systemd unit, a Docker container name, or
 #           {name: <unit>, target: <ct id>} for the Proxmox driver
+# health_path: optional readiness GET path for llm_unit (default /health)
+# api_paths: optional explicit subset of broker compatibility routes the server implements
+# metrics_path: optional runtime observability endpoint metadata (for future ingestion)
 # vram_mib: peak VRAM; models over (vram_total_mib - vram_reserve_mib) are never loaded
 # caps:     capabilities; a request's caps must be a subset for a model to stand in for another
 # quality:  0-100, the highest-quality valid substitute of the same kind wins
@@ -28,6 +31,9 @@ models:
     unit: llama-server               # systemd unit or container running llama.cpp's llama-server
     endpoint: http://127.0.0.1:8080
     served_name: llama-3.1-8b-instruct
+    health_path: /health
+    api_paths: [/v1/chat/completions, /v1/completions]
+    metrics_path: /metrics
     auth_env: UPSTREAM_TOKEN_LLAMA   # optional: env var holding llama-server's --api-key
     vram_mib: 7500
     slots: 4                         # llama-server -np 4: the broker runs up to 4 calls at once
