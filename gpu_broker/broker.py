@@ -14,7 +14,7 @@ from . import drivers
 from .backends import Backends, HttpBackends
 from .catalog import Catalog
 from .chat import DirectChat
-from .constants import SESSION_KEY, TERMINAL, UPSTREAM_TOKEN_PREFIX, Event, JobState
+from .constants import INTERACTIVE_KEY, PRIORITY_KEY, SESSION_KEY, TERMINAL, UPSTREAM_TOKEN_PREFIX, Event, JobState
 from .downloads import Downloader
 from .metrics import GpuSampler
 from .residency import Residency
@@ -25,7 +25,7 @@ from .settings import Settings
 from .store import Row, Store
 
 REQUESTER_MAX = 120   # caller labels are stored and shown; keep them short
-STRING_FIELDS = ("model", "kind", "requester")
+STRING_FIELDS = ("model", "kind", "requester", PRIORITY_KEY)
 
 
 def validate_request(body: Mapping[str, Any]) -> None:
@@ -55,7 +55,7 @@ class Broker:
         self.residency = Residency(self.catalog, self.driver, self.backends, self.store, s.timeouts, s.intervals,
                                    s.comfy.unit)
         self.sessions = Sessions(self.catalog.defaults, self.backends.comfy_queue_len, s.intervals.session_poll_s)
-        self.scheduler = Scheduler(self.catalog, self.store, self.residency, self.backends, self.sessions, s.intervals)
+        self.scheduler = Scheduler(self.catalog, self.store, self.residency, self.backends, self.sessions, s.intervals, s.scheduling)
         self.sessions.queued_jobs = self.scheduler.has_queued
         self.chat = DirectChat(self.catalog, self.store, self.scheduler.pool, self.backends)
         self.downloads = Downloader(self.store, self.driver, self.catalog, s.intervals.worker_poll_s)
@@ -110,7 +110,8 @@ class Broker:
         self.store.update_job(jid, resolved=r.resolved, substitution=r.substitution)
         if r.substitution:
             self.store.event(Event.JOB_SUBSTITUTED, jid, requested=name, resolved=r.resolved, reason=r.substitution)
-        info["queue_position"] = self.scheduler.submit(jid)
+        info["queue_position"] = self.scheduler.submit(
+            jid, body.get(PRIORITY_KEY), interactive=bool(body.get(INTERACTIVE_KEY)))
         return jid, info
 
     def _key_for_slug(self, slug: str) -> str | None:
