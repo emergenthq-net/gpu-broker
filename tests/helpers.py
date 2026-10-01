@@ -72,15 +72,30 @@ class FakeBackends:
         self.queue: int | None = 0
         self.chat_gate: threading.Event | None = None   # set → chat calls block until released
         self.chats: list[str] = []
+        self.paths: list[str] = []
         self.streamed: list[dict[str, Any]] = []
 
     def llm_healthy(self, model) -> bool:
         return unit_ref(model["unit"]).name in self.driver.active
 
     def llm_chat(self, model, payload) -> dict[str, Any]:
+        return self.llm_request(model, "/v1/chat/completions", payload)
+
+    def llm_request(self, model, path, payload) -> dict[str, Any]:
         self.chats.append(model["served_name"])
+        self.paths.append(path)
         if self.chat_gate is not None:
             assert self.chat_gate.wait(WAIT_S)
+        if path == "/v1/embeddings":
+            return {"object": "list", "data": [{"embedding": [0.1, 0.2], "index": 0}]}
+        if path == "/v1/rerank":
+            return {"results": [{"index": 0, "relevance_score": 0.9}]}
+        if path == "/v1/score":
+            return {"data": [{"score": 0.9}]}
+        if path == "/v1/responses":
+            return {"object": "response", "output_text": model["served_name"]}
+        if path == "/v1/completions":
+            return {"object": "text_completion", "choices": [{"text": model["served_name"]}]}
         return {"choices": [{"message": {"content": model["served_name"]}}],
                 "timings": {"predicted_per_second": 50.0, "predicted_n": 10}}
 
