@@ -17,6 +17,7 @@ from fastapi.responses import HTMLResponse, Response
 from ..broker import Broker
 from ..constants import ERR_SHORT
 from ..drivers import DRIVER_ERRORS
+from ..inventory import summarize as inventory_summary
 from ..metrics import job_metrics, summarize
 
 STATIC = files(__package__) / "static"
@@ -80,5 +81,34 @@ def data_router(broker: Broker) -> APIRouter:
     @r.get("/v1/stats")
     def stats(hours: float = s.limits.stats_window_s / HOURS) -> dict[str, Any]:
         return broker.store.stats(time.time() - min(hours * HOURS, s.limits.stats_window_s))
+
+    @r.get("/v1/system")
+    def system() -> dict[str, Any]:
+        queued, running, inflight = broker.scheduler.snapshot()
+        return {
+            "resource": {
+                "id": "gpu:0",
+                "kind": "gpu",
+                "telemetry": "nvidia-smi",
+                "vram_budget_mib": inventory_summary(broker.catalog)["vram_budget_mib"],
+                "resident": broker.residency.current,
+                "last_comfy": broker.residency.last_comfy,
+            },
+            "scheduler": {
+                "policy": s.scheduling.policy,
+                "aging_s": s.scheduling.aging_s,
+                "paused": broker.scheduler.paused.is_set(),
+                "queued": len(queued),
+                "running": running,
+                "inflight": len(inflight),
+            },
+            "catalog": inventory_summary(broker.catalog),
+            "runtime": {
+                "driver": s.driver.kind,
+                "json_routes": ["/v1/chat/completions", "/v1/completions", "/v1/responses",
+                                "/v1/embeddings", "/v1/rerank", "/v1/score"],
+                "stream_routes": ["/v1/chat/completions"],
+            },
+        }
 
     return r
