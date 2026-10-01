@@ -95,6 +95,12 @@ class Limits:
 
 
 @dataclass(frozen=True)
+class Scheduling:
+    policy: str = "balanced"      # balanced | fifo
+    aging_s: float = 300          # waiting this long promotes a job one priority band
+
+
+@dataclass(frozen=True)
 class Ui:
     gpu_label: str = "GPU"
     resident_label: str = "the default model"
@@ -115,6 +121,7 @@ class Settings:
     timeouts: Timeouts = field(default_factory=Timeouts)
     intervals: Intervals = field(default_factory=Intervals)
     limits: Limits = field(default_factory=Limits)
+    scheduling: Scheduling = field(default_factory=Scheduling)
     ui: Ui = field(default_factory=Ui)
     source: str | None = None     # the file these came from, for the startup event
 
@@ -130,6 +137,8 @@ ENV: Mapping[str, tuple[str, ...]] = {   # env var -> settings path
     "BROKER_COMFY_URL": ("comfy", "url"),
     "BROKER_DRIVER": ("driver", "kind"),
     "BROKER_CHAT_WAIT_S": ("timeouts", "chat_wait_s"),
+    "BROKER_SCHEDULER_POLICY": ("scheduling", "policy"),
+    "BROKER_SCHEDULER_AGING_S": ("scheduling", "aging_s"),
 }
 
 
