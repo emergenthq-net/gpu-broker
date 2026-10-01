@@ -47,7 +47,8 @@ function drawIndex(models, st) {
   $("idx").innerHTML = rows.map(([k,m]) => {
     const active = k === res || (ses && ses.model === k);
     const caps = (m.caps || []).slice(0,8).map(x => `<span class="chip">${esc(x)}</span>`).join("");
-    const meta = [m.vram_mib ? gb(m.vram_mib)+" GB" : null, m.runner, m.quality != null ? "quality "+m.quality : null].filter(Boolean);
+    const lifecycle = m.residency && m.residency !== "unit" ? m.residency : null;
+    const meta = [m.vram_mib ? gb(m.vram_mib)+" GB" : null, m.runner, lifecycle, m.quality != null ? "quality "+m.quality : null].filter(Boolean);
     return `<article class="model${active ? " active" : ""}"><div class="model-top"><div class="model-name">${esc(k)}</div>` +
       `<div class="model-kind">${esc(m.kind || "unknown")}</div></div><div class="model-meta">${meta.map(esc).join(" · ")}</div>` +
       `<div class="model-caps">${caps || '<span class="chip">no caps</span>'}</div><div class="model-actions">${badge(m)}<span>${action(k,m,res,ses)}</span></div></article>`;
