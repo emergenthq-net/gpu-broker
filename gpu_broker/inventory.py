@@ -12,6 +12,7 @@ def summarize(catalog: Catalog) -> dict[str, Any]:
     kinds: Counter[str] = Counter()
     runners: Counter[str] = Counter()
     statuses: Counter[str] = Counter()
+    residency: Counter[str] = Counter()
     caps: Counter[str] = Counter()
     runnable_models: list[str] = []
 
@@ -19,6 +20,7 @@ def summarize(catalog: Catalog) -> dict[str, Any]:
         kinds[str(model.get("kind", "unknown"))] += 1
         runners[str(model.get("runner", "unknown"))] += 1
         statuses[str(model.get("status", "unknown"))] += 1
+        residency[str(model.get("residency", "unit"))] += 1
         caps.update(str(cap) for cap in model.get("caps", []))
         if runnable(catalog.data, key, session=bool(model.get("session_only"))):
             runnable_models.append(key)
@@ -30,6 +32,7 @@ def summarize(catalog: Catalog) -> dict[str, Any]:
         "kinds": dict(sorted(kinds.items())),
         "runners": dict(sorted(runners.items())),
         "statuses": dict(sorted(statuses.items())),
+        "residency": dict(sorted(residency.items())),
         "capabilities": dict(sorted(caps.items())),
         "vram_budget_mib": budget(catalog.data),
     }
