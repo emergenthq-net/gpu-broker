@@ -113,3 +113,27 @@ def test_stream_relays_lines_and_keeps_usage_and_timings(http):
     assert len(lines) == 5 and lines[-1] == "data: [DONE]\n"
     assert summary == {"usage": {"total_tokens": 3}, "timings": {"predicted_n": 1}}
     assert json.loads(seen[0].data) == {"messages": [], "model": "served", "stream": True}   # broker fields stripped
+
+
+def test_generic_json_route_does_not_inject_stream(http):
+    seen, routes = http
+    routes["/v1/embeddings"] = {"object": "list", "data": []}
+    out = backends().llm_request(MODEL, "/v1/embeddings", {"model": "alias", "input": "hi"})
+    assert out["object"] == "list"
+    assert json.loads(seen[0].data) == {"input": "hi", "model": "served"}
+
+
+def test_runtime_contract_controls_health_and_api_paths(http):
+    seen, routes = http
+    model = {**MODEL, "health_path": "/api/version", "api_paths": ["/v1/chat/completions"]}
+    routes["/api/version"] = {"version": "x"}
+    assert backends().llm_healthy(model) is True
+    assert seen[-1].full_url.endswith("/api/version")
+    with pytest.raises(ValueError, match="does not declare support"):
+        backends().llm_request(model, "/v1/embeddings", {"input": "hi"})
+
+
+def test_llm_request_never_becomes_an_arbitrary_proxy(http):
+    with pytest.raises(ValueError, match="unsupported LLM API path"):
+        backends().llm_request(MODEL, "/admin/delete-everything", {})
+    assert http[0] == []
