@@ -69,3 +69,23 @@ def test_runtime_contract_accepts_custom_health_and_declared_api_paths():
     d["models"]["llama-8b"]["metrics_path"] = "/metrics"
     d["models"]["llama-8b"]["api_paths"] = ["/v1/chat/completions", "/v1/embeddings"]
     validate(d)
+
+
+
+@pytest.mark.parametrize("mode", ["vllm_sleep", "ollama"])
+def test_api_residency_requires_managed_llm_contract(mode):
+    d = copy.deepcopy(DATA)
+    d["models"]["llama-8b"]["residency"] = mode
+    validate(d)
+
+    bad = copy.deepcopy(DATA)
+    bad["models"]["sdxl-base"]["residency"] = mode
+    with pytest.raises(ValueError, match="requires runner llm_unit"):
+        validate(bad)
+
+
+def test_unknown_residency_mode_rejected():
+    d = copy.deepcopy(DATA)
+    d["models"]["llama-8b"]["residency"] = "magic"
+    with pytest.raises(ValueError, match="unknown residency mode"):
+        validate(d)
