@@ -11,12 +11,19 @@ license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Ashwin Philips" }]
+keywords = ["gpu", "llm", "comfyui", "inference", "scheduler"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Framework :: FastAPI",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: POSIX :: Linux",
 ]
+[project.urls]
+Homepage = "https://github.com/emergenthq-net/gpu-broker"
+Repository = "https://github.com/emergenthq-net/gpu-broker"
+Issues = "https://github.com/emergenthq-net/gpu-broker/issues"
+Releases = "https://github.com/emergenthq-net/gpu-broker/releases"
+
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
