@@ -94,6 +94,8 @@ class Residency:
             self.backends.llm_api_activate(m)
         waited = self._wait(lambda: self.healthy(key), self.t.llm_start_s)
         if waited is None:
+            if mode == ResidencyMode.UNIT:
+                raise RuntimeError(f"{key} did not become healthy within {self.t.llm_start_s}s")
             raise RuntimeError(f"{key} did not become resident and healthy within {self.t.llm_start_s}s")
         self.store.event(Event.RES_READY, jid, model=key, residency=mode, load_s=round(waited, DECIMALS))
 
