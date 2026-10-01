@@ -15,7 +15,7 @@ from fastapi.responses import JSONResponse, Response
 
 from ..broker import Broker
 from ..constants import APP_NAME, AUTH_SCHEME
-from . import admin, chat, dash, jobs, sessions
+from . import admin, chat, compat, dash, jobs, sessions
 
 Auth = Callable[..., None]
 
@@ -68,6 +68,7 @@ def create_app(broker: Broker, token: str, start: bool = True) -> FastAPI:
 
     app.include_router(jobs.router(broker), dependencies=[auth])
     app.include_router(chat.router(broker), dependencies=[auth])
+    app.include_router(compat.router(broker), dependencies=[auth])
     app.include_router(sessions.router(broker), dependencies=[auth])
     app.include_router(admin.router(broker), dependencies=[auth])
     app.include_router(dash.data_router(broker), dependencies=[auth])
