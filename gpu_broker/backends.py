@@ -94,11 +94,12 @@ class HttpBackends:
 
     def llm_request(self, model: Model, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
         """One non-streamed request to a supported JSON compatibility endpoint."""
-        result: dict[str, Any] = self._json(self._llm_request(model, path, payload, False), self.t.llm_call_s)
+        result: dict[str, Any] = self._json(self._llm_request(model, path, payload), self.t.llm_call_s)
         return result
 
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
-        return self.llm_request(model, CHAT, payload)
+        result: dict[str, Any] = self._json(self._llm_request(model, CHAT, payload, False), self.t.llm_call_s)
+        return result
 
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]:
         """Relay the server's SSE lines as they arrive; copy usage/timings from them into `summary`."""
