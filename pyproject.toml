@@ -18,17 +18,17 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
     "Operating System :: POSIX :: Linux",
 ]
-[project.urls]
-Homepage = "https://github.com/emergenthq-net/gpu-broker"
-Repository = "https://github.com/emergenthq-net/gpu-broker"
-Issues = "https://github.com/emergenthq-net/gpu-broker/issues"
-Releases = "https://github.com/emergenthq-net/gpu-broker/releases"
-
 dependencies = [
     "fastapi>=0.115,<1",
     "uvicorn>=0.30,<1",
     "pyyaml>=6.0,<7",
 ]
+
+[project.urls]
+Homepage = "https://github.com/emergenthq-net/gpu-broker"
+Repository = "https://github.com/emergenthq-net/gpu-broker"
+Issues = "https://github.com/emergenthq-net/gpu-broker/issues"
+Releases = "https://github.com/emergenthq-net/gpu-broker/releases"
 
 [project.optional-dependencies]
 download = ["huggingface_hub>=0.34"]   # provides the `hf` CLI used for model downloads
