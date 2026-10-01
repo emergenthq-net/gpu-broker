@@ -15,7 +15,7 @@ from collections.abc import Callable
 
 from .backends import Backends
 from .catalog import Catalog
-from .constants import ERR_SHORT, Event, Runner, Verb
+from .constants import ERR_SHORT, Event, ResidencyMode, Runner, Verb
 from .drivers import DRIVER_ERRORS, Driver
 from .settings import Intervals, Timeouts
 from .store import Store
@@ -34,21 +34,33 @@ class Residency:
         self.current: str | None = None      # catalog key of the resident LLM, if any
         self.last_comfy: str | None = None   # last ComfyUI model that ran (its weights may still be loaded)
 
+    def _mode(self, key: str) -> ResidencyMode:
+        return ResidencyMode(self.catalog.models[key].get("residency", ResidencyMode.UNIT))
+
     def detect(self) -> str | None:
-        """At startup: adopt whichever LLM unit is already running. A broken driver is logged,
-        not raised, so the API still comes up."""
+        """At startup, adopt the catalog LLM that is actually GPU-resident.
+
+        Unit-managed servers are resident when their unit is active. API-managed servers may
+        stay up while their model is sleeping/unloaded, so their lifecycle endpoint is checked too.
+        A broken driver/backend is logged, not raised, so the API still comes up.
+        """
         self.current = None
         for key, m in self.catalog.llm_units():
             try:
-                if self.driver.unit(m["unit"], Verb.IS_ACTIVE):
+                if not self.driver.unit(m["unit"], Verb.IS_ACTIVE):
+                    continue
+                if self._mode(key) == ResidencyMode.UNIT or self.backends.llm_api_resident(m):
                     self.current = key
                     break
-            except DRIVER_ERRORS as e:
+            except (OSError, ValueError) as e:
                 self.store.event(Event.RES_DETECT_FAILED, model=key, error=str(e)[:ERR_SHORT])
         return self.current
 
     def healthy(self, key: str) -> bool:
-        return self.backends.llm_healthy(self.catalog.models[key])
+        m = self.catalog.models[key]
+        if not self.backends.llm_healthy(m):
+            return False
+        return self._mode(key) == ResidencyMode.UNIT or self.backends.llm_api_resident(m)
 
     def _wait(self, ready: Callable[[], bool], timeout_s: float) -> float | None:
         """Poll `ready` until it holds; seconds waited, or None on timeout."""
@@ -60,18 +72,30 @@ class Residency:
         return None
 
     def _stop_llm(self, key: str, jid: str | None) -> None:
-        self.store.event(Event.RES_STOP, jid, model=key)
-        self.driver.unit(self.catalog.models[key]["unit"], Verb.STOP)
+        m, mode = self.catalog.models[key], self._mode(key)
+        self.store.event(Event.RES_STOP, jid, model=key, residency=mode)
+        if mode == ResidencyMode.UNIT:
+            self.driver.unit(m["unit"], Verb.STOP)
+        else:
+            self.backends.llm_api_deactivate(m)
 
     def _start_llm(self, key: str, jid: str | None) -> None:
-        unit = self.catalog.models[key]["unit"]
-        self.store.event(Event.RES_START, jid, model=key)
-        if not self.driver.unit(unit, Verb.START):
-            raise RuntimeError(f"could not start {unit_ref(unit).name}")
+        m, mode, unit = self.catalog.models[key], self._mode(key), self.catalog.models[key]["unit"]
+        self.store.event(Event.RES_START, jid, model=key, residency=mode)
+        if mode == ResidencyMode.UNIT:
+            if not self.driver.unit(unit, Verb.START):
+                raise RuntimeError(f"could not start {unit_ref(unit).name}")
+        else:
+            if not self.driver.unit(unit, Verb.IS_ACTIVE):
+                if not self.driver.unit(unit, Verb.START):
+                    raise RuntimeError(f"could not start {unit_ref(unit).name}")
+                if self._wait(lambda: self.backends.llm_healthy(m), self.t.llm_start_s) is None:
+                    raise RuntimeError(f"{key} server did not become healthy within {self.t.llm_start_s}s")
+            self.backends.llm_api_activate(m)
         waited = self._wait(lambda: self.healthy(key), self.t.llm_start_s)
         if waited is None:
-            raise RuntimeError(f"{key} did not become healthy within {self.t.llm_start_s}s")
-        self.store.event(Event.RES_READY, jid, model=key, load_s=round(waited, DECIMALS))
+            raise RuntimeError(f"{key} did not become resident and healthy within {self.t.llm_start_s}s")
+        self.store.event(Event.RES_READY, jid, model=key, residency=mode, load_s=round(waited, DECIMALS))
 
     def _comfy_up(self, jid: str | None) -> None:
         """ComfyUI is meant to stay up, but it can be stopped from outside; start it if we may."""
