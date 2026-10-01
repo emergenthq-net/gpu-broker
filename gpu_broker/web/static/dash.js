@@ -112,13 +112,13 @@ function drawEvents(ev) {
     <td class=mute>${esc(JSON.stringify(e.data).slice(0, DETAIL_CHARS))}</td></tr>`).join("");
 }
 
-async function tick() {
+function drawSystem(sys) {\n  const s = sys.scheduler || {}, cat = sys.catalog || {}, rt = sys.runtime || {}, res = sys.resource || {};\n  const paused = Boolean(s.paused);\n  document.body.classList.toggle("paused", paused);\n  $("policy").textContent = (s.policy || "scheduler") + (paused ? " · paused" : " · active");\n  $("schedDot").className = "dot " + (paused ? "warn" : "ok");\n  $("schedBtn").dataset.paused = String(paused); $("schedBtn").textContent = paused ? "Resume" : "Quiesce";\n  $("schedSummary").textContent = paused ? "Queue paused" : ((s.queued || 0) + " queued · " + (s.inflight || 0) + " in flight");\n  $("schedDetail").textContent = (s.policy || "–") + " policy · aging " + (s.aging_s ?? "–") + "s · locality-aware";\n  $("modelCount").textContent = (cat.runnable ?? 0) + " / " + (cat.models ?? 0);\n  $("modelSummary").textContent = "runnable / catalog models";\n  $("sysDriver").textContent = rt.driver || "–"; $("sysPolicy").textContent = (s.policy || "–") + " · aging " + (s.aging_s ?? "–") + "s";\n  $("sysResource").textContent = (res.id || "gpu:0") + " · " + gb(res.vram_budget_mib || 0) + " GB budget";\n  const routes = rt.json_routes || []; $("sysRoutes").textContent = routes.length + " JSON · " + (rt.stream_routes || []).length + " streaming";\n  $("driverChip").textContent = "driver · " + (rt.driver || "–"); $("routeChip").textContent = "routes · " + routes.length;\n  const caps = Object.entries(cat.capabilities || {}).sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));\n  $("sysCaps").innerHTML = caps.slice(0,12).map(([cap,n]) => `<span class="chip">${esc(cap)}<strong>${n}</strong></span>`).join("") || `<span class="chip">none declared</span>`;\n}\nasync function tick() {
   try {
     const [st, gpu, sx, ev] = await Promise.all([get(API.status), get(API.gpu), get(API.stats),
                                                  get(`${API.events}?since=${lastSeq}&limit=${EVENTS_PAGE}`)]);
     drawStatus(st, gpu); drawStats(sx); drawEvents(ev);
     $("upd").textContent = "updated " + new Date().toLocaleTimeString();
-  } catch (e) { $("upd").textContent = e.message === "token" ? "token needed" : "error: " + e.message; }
+  } catch (e) { $("connDot").className = "dot warn"; $("upd").textContent = e.message === "token" ? "token needed" : "error · " + e.message; }
 }
 
 if (!tok) $("tok").style.display = "flex";
