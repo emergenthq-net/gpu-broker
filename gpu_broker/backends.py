@@ -18,13 +18,12 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 from .catalog import Model
-from .constants import AUTH_SCHEME, BROKER_FIELDS, ERR_DETAIL
+from .constants import AUTH_SCHEME, BROKER_FIELDS, CHAT_PATH, ERR_DETAIL, OPENAI_JSON_PATHS
 from .settings import Comfy, Intervals, Timeouts
 
 JSON = {"Content-Type": "application/json"}
 SCHEMES = frozenset({"http", "https"})   # never file:, ftp: or custom handlers
-HEALTH, CHAT = "/health", "/v1/chat/completions"
-LLM_JSON_PATHS = frozenset({CHAT, "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/rerank", "/v1/score"})
+HEALTH = "/health"
 SYSTEM_STATS, FREE, PROMPT, HISTORY, VIEW = "/system_stats", "/free", "/prompt", "/history/", "/view"
 OUTPUT_KINDS = ("images", "videos", "gifs", "audio")
 OUTPUT_TYPE = "output"
@@ -80,12 +79,15 @@ class HttpBackends:
 
     # ---- LLM servers ----------------------------------------------------
     def llm_healthy(self, model: Model) -> bool:
-        return self._ok(_request(model["endpoint"] + HEALTH, headers=self._auth(model)))
+        return self._ok(_request(model["endpoint"] + model.get("health_path", HEALTH), headers=self._auth(model)))
 
     def _llm_request(self, model: Model, path: str, payload: Mapping[str, Any], stream: bool | None = None) -> urllib.request.Request:
         """Build a request to a fixed compatibility path on a trusted catalog endpoint."""
-        if path not in LLM_JSON_PATHS:
+        if path not in OPENAI_JSON_PATHS:
             raise ValueError(f"unsupported LLM API path {path!r}")
+        declared = model.get("api_paths")
+        if declared and path not in declared:
+            raise ValueError(f"model server does not declare support for {path}")
         body = {k: v for k, v in payload.items() if k not in BROKER_FIELDS}
         body["model"] = model["served_name"]
         if stream is not None:
@@ -98,12 +100,12 @@ class HttpBackends:
         return result
 
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
-        result: dict[str, Any] = self._json(self._llm_request(model, CHAT, payload, False), self.t.llm_call_s)
+        result: dict[str, Any] = self._json(self._llm_request(model, CHAT_PATH, payload, False), self.t.llm_call_s)
         return result
 
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]:
         """Relay the server's SSE lines as they arrive; copy usage/timings from them into `summary`."""
-        with urllib.request.urlopen(self._llm_request(model, CHAT, payload, True), timeout=self.t.llm_call_s) as r:  # noqa: S310 — built by _request
+        with urllib.request.urlopen(self._llm_request(model, CHAT_PATH, payload, True), timeout=self.t.llm_call_s) as r:  # noqa: S310 — built by _request
             for raw in r:
                 line = raw.decode(ENCODING, "replace")
                 if line.startswith(SSE_JSON):
