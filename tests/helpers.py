@@ -74,6 +74,8 @@ class FakeBackends:
         self.chats: list[str] = []
         self.paths: list[str] = []
         self.streamed: list[dict[str, Any]] = []
+        self.api_resident: set[str] = set()
+        self.lifecycle: list[tuple[str, str]] = []
 
     def llm_healthy(self, model) -> bool:
         return unit_ref(model["unit"]).name in self.driver.active
@@ -99,6 +101,16 @@ class FakeBackends:
         return {"choices": [{"message": {"content": model["served_name"]}}],
                 "timings": {"predicted_per_second": 50.0, "predicted_n": 10}}
 
+    def llm_api_resident(self, model) -> bool:
+        return model["served_name"] in self.api_resident
+
+    def llm_api_activate(self, model) -> None:
+        self.api_resident.add(model["served_name"])
+        self.lifecycle.append(("activate", model["served_name"]))
+
+    def llm_api_deactivate(self, model) -> None:
+        self.api_resident.discard(model["served_name"])
+        self.lifecycle.append(("deactivate", model["served_name"]))
     def llm_stream(self, model, payload, summary) -> Iterator[str]:
         """The served name, one word per SSE chunk, then timings and [DONE]."""
         self.chats.append(model["served_name"])
