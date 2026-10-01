@@ -24,6 +24,7 @@ from .settings import Comfy, Intervals, Timeouts
 JSON = {"Content-Type": "application/json"}
 SCHEMES = frozenset({"http", "https"})   # never file:, ftp: or custom handlers
 HEALTH, CHAT = "/health", "/v1/chat/completions"
+LLM_JSON_PATHS = frozenset({CHAT, "/v1/completions", "/v1/responses", "/v1/embeddings", "/v1/rerank", "/v1/score"})
 SYSTEM_STATS, FREE, PROMPT, HISTORY, VIEW = "/system_stats", "/free", "/prompt", "/history/", "/view"
 OUTPUT_KINDS = ("images", "videos", "gifs", "audio")
 OUTPUT_TYPE = "output"
@@ -41,6 +42,7 @@ class Backends(Protocol):
     """What the scheduler and residency need from the backends (tests substitute fakes)."""
 
     def llm_healthy(self, model: Model) -> bool: ...
+    def llm_request(self, model: Model, path: str, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]: ...
     def comfy_alive(self) -> bool: ...
@@ -80,20 +82,27 @@ class HttpBackends:
     def llm_healthy(self, model: Model) -> bool:
         return self._ok(_request(model["endpoint"] + HEALTH, headers=self._auth(model)))
 
-    def _chat_request(self, model: Model, payload: Mapping[str, Any], stream: bool) -> urllib.request.Request:
-        """The server sees its own served name, not the alias asked for, and none of the broker's fields."""
+    def _llm_request(self, model: Model, path: str, payload: Mapping[str, Any], stream: bool | None = None) -> urllib.request.Request:
+        """Build a request to a fixed compatibility path on a trusted catalog endpoint."""
+        if path not in LLM_JSON_PATHS:
+            raise ValueError(f"unsupported LLM API path {path!r}")
         body = {k: v for k, v in payload.items() if k not in BROKER_FIELDS}
-        body.update(model=model["served_name"], stream=stream)
-        return _request(model["endpoint"] + CHAT, body, self._auth(model))
+        body["model"] = model["served_name"]
+        if stream is not None:
+            body["stream"] = stream
+        return _request(model["endpoint"] + path, body, self._auth(model))
+
+    def llm_request(self, model: Model, path: str, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """One non-streamed request to a supported JSON compatibility endpoint."""
+        result: dict[str, Any] = self._json(self._llm_request(model, path, payload, False), self.t.llm_call_s)
+        return result
 
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
-        """One non-streamed completion."""
-        result: dict[str, Any] = self._json(self._chat_request(model, payload, False), self.t.llm_call_s)
-        return result
+        return self.llm_request(model, CHAT, payload)
 
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]:
         """Relay the server's SSE lines as they arrive; copy usage/timings from them into `summary`."""
-        with urllib.request.urlopen(self._chat_request(model, payload, True), timeout=self.t.llm_call_s) as r:  # noqa: S310 — built by _request
+        with urllib.request.urlopen(self._llm_request(model, CHAT, payload, True), timeout=self.t.llm_call_s) as r:  # noqa: S310 — built by _request
             for raw in r:
                 line = raw.decode(ENCODING, "replace")
                 if line.startswith(SSE_JSON):
