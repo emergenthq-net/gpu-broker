@@ -51,6 +51,9 @@ def router(broker: Broker) -> APIRouter:
         queued, running, inflight = broker.scheduler.snapshot()
         current = running if running and running not in inflight else (inflight[0] if inflight else None)
         return {"resident_llm": broker.residency.current, "last_comfy": broker.residency.last_comfy,
+                "scheduler": {"paused": broker.scheduler.paused.is_set(),
+                              "policy": broker.settings.scheduling.policy,
+                              "aging_s": broker.settings.scheduling.aging_s},
                 "session": broker.sessions.view(), "running": current and broker.view(current),
                 "inflight": [broker.view(j) for j in inflight], "queue": [broker.view(j) for j in queued],
                 "downloads": broker.store.downloads(limits.status_downloads), "recent": broker.store.jobs(limits.status_recent)}
