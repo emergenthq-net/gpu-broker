@@ -52,7 +52,7 @@ class Residency:
                 if self._mode(key) == ResidencyMode.UNIT or self.backends.llm_api_resident(m):
                     self.current = key
                     break
-            except (OSError, ValueError) as e:
+            except DRIVER_ERRORS as e:
                 self.store.event(Event.RES_DETECT_FAILED, model=key, error=str(e)[:ERR_SHORT])
         return self.current
 
