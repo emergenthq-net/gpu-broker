@@ -3,80 +3,232 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>gpu-broker</title>
+<meta name="color-scheme" content="light dark">
+<title>gpu-broker · control plane</title>
 <style>
-  :root { --bg:#f6f7f9; --card:#fff; --fg:#1b1f24; --mute:#667085; --line:#e4e7ec;
-          --ok:#12805c; --warn:#b54708; --bad:#b42318; --acc:#3b5bdb;
-          --ttft:#2b8a3e; --power:#e8590c; --temp:#c92a2a; }
-  @media (prefers-color-scheme: dark) {
-    :root { --bg:#0f1115; --card:#171a21; --fg:#e6e8eb; --mute:#98a2b3; --line:#2a2f3a;
-            --ok:#3ccf91; --warn:#f5a524; --bad:#f97066; --acc:#8ea2ff;
-            --ttft:#51cf66; --power:#ff922b; --temp:#ff6b6b; }
+:root {
+  --bg:#f4f6f9; --surface:#fff; --surface2:#f8fafc; --surface3:#eef2f6;
+  --fg:#111827; --muted:#667085; --dim:#98a2b3; --line:#dfe3e8;
+  --ok:#087f5b; --okbg:#e7f8f1; --warn:#b54708; --warnbg:#fff4e5;
+  --bad:#b42318; --badbg:#feeceb; --acc:#3157d5; --acc2:#6842c2; --accbg:#edf1ff;
+  --ttft:#2f9e44; --power:#e8590c; --temp:#c92a2a;
+  --shadow:0 1px 2px rgba(16,24,40,.04),0 8px 24px rgba(16,24,40,.04);
+  --radius:14px;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg:#0b0e13; --surface:#121722; --surface2:#171d29; --surface3:#202837;
+    --fg:#f1f3f5; --muted:#a3adbd; --dim:#667085; --line:#293244;
+    --ok:#50d6a0; --okbg:#102b24; --warn:#ffb454; --warnbg:#302314;
+    --bad:#ff8278; --badbg:#341917; --acc:#8fa8ff; --acc2:#bc9cff; --accbg:#1c2748;
+    --ttft:#69db7c; --power:#ffa94d; --temp:#ff8787;
+    --shadow:0 1px 2px rgba(0,0,0,.25),0 12px 32px rgba(0,0,0,.18);
   }
-  * { box-sizing:border-box }
-  body { margin:0; background:var(--bg); color:var(--fg);
-         font:14px/1.45 ui-sans-serif,system-ui,-apple-system,sans-serif; }
-  main { max-width:1100px; margin:0 auto; padding:16px; }
-  h1 { font-size:18px; margin:0 0 12px; display:flex; gap:10px; align-items:baseline; flex-wrap:wrap }
-  h1 small { color:var(--mute); font-weight:400; font-size:12px }
-  h2 { font-size:13px; text-transform:uppercase; letter-spacing:.04em; color:var(--mute); margin:0 0 8px }
-  .grid { display:grid; gap:12px; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:12px; min-width:0 }
-  .big { font-size:22px; font-weight:600 }
-  .mute { color:var(--mute) } .ok{color:var(--ok)} .warn{color:var(--warn)} .bad{color:var(--bad)}
-  .bar { height:8px; background:var(--line); border-radius:4px; overflow:hidden; margin-top:6px }
-  .bar i { display:block; height:100%; background:var(--acc) }
-  .wide { margin-top:12px; overflow-x:auto }
-  table { width:100%; border-collapse:collapse; font-size:13px }
-  th,td { text-align:left; padding:5px 6px; border-bottom:1px solid var(--line); white-space:nowrap }
-  th { color:var(--mute); font-weight:500 }
-  code { font:12px ui-monospace,Menlo,monospace }
-  canvas { width:100%; height:70px; display:block; margin-top:6px }
-  .kv { display:grid; grid-template-columns:auto 1fr; gap:2px 10px; font-size:13px }
-  .kv b { font-weight:500; color:var(--mute) }
-  .ttft { color:var(--ttft) }
-  #tok { display:none; gap:8px; margin-bottom:12px } #tok input { flex:1; min-width:0; padding:6px }
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.45 Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
+button,input,select{font:inherit;color:inherit}
+button{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:7px 11px;cursor:pointer;transition:.15s ease}
+button:hover{border-color:var(--acc);transform:translateY(-1px)}
+button:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid color-mix(in srgb,var(--acc) 28%,transparent);outline-offset:2px}
+button.primary{background:var(--acc);color:#fff;border-color:transparent}
+button.danger{color:var(--bad)}
+button[disabled]{opacity:.5;cursor:not-allowed;transform:none}
+input,select{border:1px solid var(--line);background:var(--surface);border-radius:9px;padding:8px 10px}
+a{color:inherit}
+code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
+.shell{max-width:1440px;margin:0 auto;padding:0 22px 40px}
+.topbar{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(16px);border-bottom:1px solid var(--line)}
+.topbar-inner{max-width:1440px;margin:auto;padding:12px 22px;display:flex;align-items:center;gap:12px}
+.brand{display:flex;align-items:center;gap:10px;min-width:0}
+.mark{width:28px;height:28px;border-radius:8px;background:linear-gradient(135deg,var(--acc),var(--acc2));box-shadow:inset 0 0 0 1px rgba(255,255,255,.16)}
+.brand-name{font-size:15px;font-weight:760;letter-spacing:-.015em}
+.brand-sub{color:var(--muted);font-size:12px}
+.spacer{flex:1}
+.top-actions{display:flex;align-items:center;gap:7px}
+.pill{display:inline-flex;align-items:center;gap:6px;border:1px solid var(--line);background:var(--surface);border-radius:999px;padding:5px 9px;font-size:12px;white-space:nowrap}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}
+.dot.ok{background:var(--ok);box-shadow:0 0 0 3px color-mix(in srgb,var(--ok) 15%,transparent)}
+.dot.warn{background:var(--warn)}
+.nav{display:flex;gap:4px;margin:18px 0 10px;overflow:auto}
+.nav a{text-decoration:none;color:var(--muted);padding:6px 9px;border-radius:8px;white-space:nowrap}
+.nav a:hover{background:var(--surface3);color:var(--fg)}
+.auth{display:none;margin:16px 0;padding:14px;background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow)}
+.auth.show{display:flex;gap:9px;align-items:center;flex-wrap:wrap}
+.auth input{flex:1;min-width:220px}
+.section{scroll-margin-top:78px;margin-top:22px}
+.section-head{display:flex;align-items:end;gap:12px;margin-bottom:10px}
+.section-title{font-size:17px;font-weight:720;letter-spacing:-.012em;margin:0}
+.section-copy{color:var(--muted);font-size:12px}
+.section-tools{margin-left:auto;display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.grid{display:grid;gap:12px}
+.overview{grid-template-columns:repeat(4,minmax(0,1fr))}
+.card{background:var(--surface);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:14px;min-width:0}
+.card.flat{box-shadow:none}
+.kicker{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.075em;color:var(--muted);margin-bottom:7px}
+.big{font-size:24px;line-height:1.15;font-weight:720;letter-spacing:-.025em;overflow:hidden;text-overflow:ellipsis}
+.sub{color:var(--muted);font-size:12px;margin-top:5px;min-height:17px}
+.bar{height:7px;background:var(--surface3);border-radius:999px;overflow:hidden;margin-top:10px}
+.bar i{display:block;height:100%;background:linear-gradient(90deg,var(--acc),var(--acc2));border-radius:inherit}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad)}.mute{color:var(--muted)}
+.status-strip{margin-top:12px;display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:12px}
+.status-main{display:flex;align-items:center;gap:12px}
+.status-icon{width:42px;height:42px;border-radius:12px;background:var(--accbg);display:grid;place-items:center;font:700 15px ui-monospace,monospace;color:var(--acc)}
+.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px}
+.kv b{font-weight:550;color:var(--muted)}
+.chips{display:flex;gap:6px;flex-wrap:wrap}
+.chip{display:inline-flex;align-items:center;border:1px solid var(--line);background:var(--surface2);border-radius:999px;padding:3px 7px;font-size:11px;color:var(--muted)}
+.chip strong{color:var(--fg);font-weight:650;margin-left:4px}
+.model-controls{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
+.model-controls input{width:min(300px,45vw)}
+.model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(245px,1fr));gap:10px}
+.model{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;min-height:146px;display:flex;flex-direction:column;gap:7px}
+.model.active{border-color:color-mix(in srgb,var(--ok) 55%,var(--line));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 18%,transparent)}
+.model-top{display:flex;gap:8px;align-items:flex-start}
+.model-name{font-weight:700;letter-spacing:-.01em;overflow-wrap:anywhere}
+.model-kind{margin-left:auto;font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);background:var(--surface3);border-radius:999px;padding:3px 6px}
+.model-meta{display:flex;gap:8px;color:var(--muted);font-size:11px;flex-wrap:wrap}
+.model-caps{display:flex;gap:4px;flex-wrap:wrap}
+.model-actions{margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.model-actions button{font-size:12px;padding:5px 8px}
+.telemetry{grid-template-columns:repeat(4,minmax(0,1fr))}
+.telemetry .wide2{grid-column:span 2}
+canvas{width:100%;height:88px;display:block;margin-top:7px}
+.ttft{color:var(--ttft)}
+.table-card{padding:0;overflow:hidden}
+.table-card .table-head{padding:12px 14px;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:8px}
+.table-card .table-head h3{font-size:13px;margin:0}
+.scroll{overflow:auto;max-height:390px}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{position:sticky;top:0;background:var(--surface);z-index:1;color:var(--muted);font-weight:600}
+tbody tr:hover{background:var(--surface2)}
+details.card{padding:0}
+details.card summary{cursor:pointer;list-style:none;padding:13px 14px;display:flex;align-items:center;gap:8px;font-weight:650}
+details.card summary::-webkit-details-marker{display:none}
+details.card summary::after{content:"+";margin-left:auto;color:var(--muted);font-size:18px;font-weight:400}
+details.card[open] summary::after{content:"–"}
+details.card[open] summary{border-bottom:1px solid var(--line)}
+.activity{display:grid;grid-template-columns:1.2fr .8fr;gap:12px}
+.activity-stack{display:grid;gap:12px;align-content:start}
+.empty{padding:22px;color:var(--muted);text-align:center}
+.session-banner{margin-bottom:10px;padding:10px 12px;border:1px solid var(--line);border-radius:10px;background:var(--surface2);color:var(--muted)}
+body.paused .scheduler-state{color:var(--warn)}
+@media (max-width:1050px){.overview,.telemetry{grid-template-columns:repeat(2,minmax(0,1fr))}.status-strip,.activity{grid-template-columns:1fr}.telemetry .wide2{grid-column:span 2}}
+@media (max-width:640px){
+  .shell,.topbar-inner{padding-left:12px;padding-right:12px}.brand-sub,.hide-mobile{display:none}
+  .overview,.telemetry{grid-template-columns:1fr}.telemetry .wide2{grid-column:span 1}
+  .top-actions .pill{display:none}.section-head{align-items:flex-start;flex-direction:column}.section-tools{margin-left:0;width:100%}
+  .model-controls{width:100%}.model-controls input{width:100%;flex:1}.model-grid{grid-template-columns:1fr}
+  .big{font-size:21px}.card{padding:12px}
+}
 </style>
 </head>
 <body>
-<main>
-  <h1>gpu-broker <small id="upd">connecting…</small></h1>
-  <div id="tok"><input id="t" type="password" placeholder="broker token" autocomplete="off">
-    <button data-action="save-token">Save</button></div>
-  <div class="grid">
-    <div class="card"><h2 id="gpuT">GPU</h2><div class="big" id="vram">–</div>
-      <div class="bar"><i id="vbar" style="width:0"></i></div><div class="mute" id="util"></div></div>
-    <div class="card"><h2>Resident</h2><div class="big" id="res">–</div><div class="mute" id="comfy"></div></div>
-    <div class="card"><h2>Running</h2><div class="big" id="run">idle</div><div class="mute" id="runsub"></div></div>
-    <div class="card"><h2>Last 24 h</h2><div class="big" id="sum">–</div><div class="mute" id="evs"></div></div>
+<header class="topbar">
+  <div class="topbar-inner">
+    <div class="brand"><div class="mark" aria-hidden="true"></div><div>
+      <div class="brand-name">gpu-broker</div><div class="brand-sub">local inference control plane</div>
+    </div></div>
+    <div class="spacer"></div>
+    <span class="pill scheduler-state"><span class="dot" id="schedDot"></span><span id="policy">scheduler</span></span>
+    <span class="pill"><span class="dot" id="connDot"></span><span id="upd">connecting…</span></span>
+    <div class="top-actions">
+      <button data-action="refresh" title="Refresh now">Refresh</button>
+      <button data-action="scheduler" id="schedBtn" title="Pause or resume queued work">Quiesce</button>
+      <button data-action="toggle-token" title="Change broker token">Auth</button>
+    </div>
   </div>
-  <div class="card wide"><h2>Models — click to use</h2><div id="ses" class="mute" style="margin-bottom:8px">–</div>
-    <table><thead><tr><th>kind</th><th>model</th><th>VRAM</th><th>status</th><th></th></tr></thead><tbody id="idx"></tbody></table></div>
-  <h2 style="margin-top:14px">Live <span class="mute" id="lErr" style="text-transform:none"></span></h2>
-  <div class="grid">
-    <div class="card"><h2>VRAM by owner · 15 min</h2><div id="lVram" class="mute">–</div><canvas id="cVram"></canvas></div>
-    <div class="card"><h2>GPU utilization</h2><div class="big" id="lUtil">–</div><canvas id="cUtil"></canvas></div>
-    <div class="card"><h2>Power</h2><div class="big" id="lPow">–</div><canvas id="cPow"></canvas></div>
-    <div class="card"><h2>Temperature</h2><div class="big" id="lTemp">–</div><canvas id="cTemp"></canvas></div>
-    <div class="card"><h2>Generation tok/s per job · 1 h</h2><div class="mute" id="lTps">–</div><canvas id="cTps"></canvas></div>
-    <div class="card"><h2>Latency per job · 1 h</h2><div class="mute"><span class="ttft">●</span> time to first token
-      <span class="mute">●</span> total</div><canvas id="cLat"></canvas></div>
-    <div class="card"><h2>Last hour · p50 / p95</h2><div class="kv">
-      <b>gen tok/s</b><span id="kTps">–</span><b>prompt tok/s</b><span id="kPp">–</span>
-      <b>first token</b><span id="kTtft">–</span><b>total</b><span id="kTot">–</span>
-      <b>queue wait</b><span id="kQ">–</span><b>model switch</b><span id="kSw">–</span></div>
-      <div class="mute" id="kTok" style="margin-top:6px"></div></div>
+</header>
+
+<main class="shell">
+  <div id="tok" class="auth" role="region" aria-label="Authentication">
+    <strong>Connect to broker</strong>
+    <input id="t" type="password" placeholder="Bearer token" autocomplete="off" aria-label="Broker token">
+    <button class="primary" data-action="save-token">Save token</button>
+    <button data-action="clear-token">Clear</button>
   </div>
-  <div class="card wide"><h2>Queue</h2><table><thead><tr><th>#</th><th>job</th><th>requested</th>
-    <th>using</th><th>from</th><th>waiting</th></tr></thead><tbody id="q"></tbody></table></div>
-  <div class="card wide"><h2>Per model (24 h)</h2><table><thead><tr><th>model</th><th>done</th>
-    <th>failed</th><th>avg s</th><th>max s</th></tr></thead><tbody id="pm"></tbody></table></div>
-  <div class="card wide"><h2>Recent jobs</h2><table><thead><tr><th>when</th><th>job</th><th>requested</th>
-    <th>used</th><th>state</th><th>s</th><th>error</th></tr></thead><tbody id="rj"></tbody></table></div>
-  <div class="card wide"><h2>Events</h2><table><thead><tr><th>when</th><th>kind</th><th>job</th>
-    <th>detail</th></tr></thead><tbody id="ev"></tbody></table></div>
-  <div class="card wide"><h2>Downloads</h2><table><thead><tr><th>slug</th><th>ref</th><th>state</th>
-    <th>updated</th></tr></thead><tbody id="dl"></tbody></table></div>
+
+  <nav class="nav" aria-label="Dashboard sections">
+    <a href="#overview">Overview</a><a href="#models">Models</a><a href="#telemetry">Telemetry</a><a href="#activity">Activity</a>
+  </nav>
+
+  <section class="section" id="overview">
+    <div class="section-head">
+      <div><h1 class="section-title">Control plane</h1><div class="section-copy">Residency, work, and capacity at a glance.</div></div>
+      <div class="section-tools"><span class="chip" id="driverChip">driver · –</span><span class="chip" id="routeChip">routes · –</span></div>
+    </div>
+    <div class="grid overview">
+      <article class="card"><div class="kicker" id="gpuT">GPU</div><div class="big" id="vram">–</div>
+        <div class="bar"><i id="vbar" style="width:0"></i></div><div class="sub" id="util">Waiting for telemetry</div></article>
+      <article class="card"><div class="kicker">Resident</div><div class="big" id="res">–</div><div class="sub" id="comfy">No active residency yet</div></article>
+      <article class="card"><div class="kicker">Running</div><div class="big" id="run">idle</div><div class="sub" id="runsub">No work in flight</div></article>
+      <article class="card"><div class="kicker">Last 24 hours</div><div class="big" id="sum">–</div><div class="sub" id="evs">No completed work yet</div></article>
+    </div>
+
+    <div class="status-strip">
+      <article class="card status-main">
+        <div class="status-icon">GPU</div><div><div class="kicker">Scheduler</div>
+          <div><strong id="schedSummary">–</strong></div><div class="sub" id="schedDetail">Loading policy…</div></div>
+      </article>
+      <article class="card"><div class="kicker">Catalog</div><div class="big" id="modelCount">–</div><div class="sub" id="modelSummary">models</div></article>
+      <article class="card"><div class="kicker">Capabilities</div><div class="chips" id="sysCaps"><span class="chip">loading…</span></div></article>
+    </div>
+  </section>
+
+  <section class="section" id="models">
+    <div class="section-head">
+      <div><h2 class="section-title">Models</h2><div class="section-copy">Search capabilities, see residency, and borrow the GPU for interactive tools.</div></div>
+      <div class="section-tools model-controls">
+        <input id="modelSearch" type="search" placeholder="Search models or capabilities…" aria-label="Search models">
+        <select id="modelKind" aria-label="Filter model kind"><option value="">All kinds</option></select>
+        <select id="sessionIdle" aria-label="Interactive session idle timeout">
+          <option value="15">15 min session</option><option value="30">30 min session</option><option value="60">60 min session</option>
+        </select>
+      </div>
+    </div>
+    <div id="ses" class="session-banner">Loading residency…</div>
+    <div id="idx" class="model-grid" aria-live="polite"></div>
+  </section>
+
+  <section class="section" id="telemetry">
+    <div class="section-head">
+      <div><h2 class="section-title">Telemetry</h2><div class="section-copy">Live device pressure and inference latency. <span id="lErr" class="bad"></span></div></div>
+    </div>
+    <div class="grid telemetry">
+      <article class="card wide2"><div class="kicker">VRAM by owner · 15 min</div><div id="lVram" class="sub">–</div><canvas id="cVram"></canvas></article>
+      <article class="card"><div class="kicker">GPU utilization</div><div class="big" id="lUtil">–</div><canvas id="cUtil"></canvas></article>
+      <article class="card"><div class="kicker">Power</div><div class="big" id="lPow">–</div><canvas id="cPow"></canvas></article>
+      <article class="card"><div class="kicker">Temperature</div><div class="big" id="lTemp">–</div><canvas id="cTemp"></canvas></article>
+      <article class="card"><div class="kicker">Generation tok/s · 1 h</div><div class="sub" id="lTps">–</div><canvas id="cTps"></canvas></article>
+      <article class="card"><div class="kicker">Latency per job · 1 h</div><div class="sub"><span class="ttft">●</span> first token · ● total</div><canvas id="cLat"></canvas></article>
+      <article class="card"><div class="kicker">Last hour · p50 / p95</div><div class="kv">
+        <b>gen tok/s</b><span id="kTps">–</span><b>prompt tok/s</b><span id="kPp">–</span>
+        <b>first token</b><span id="kTtft">–</span><b>total</b><span id="kTot">–</span>
+        <b>queue wait</b><span id="kQ">–</span><b>model switch</b><span id="kSw">–</span></div>
+        <div class="sub" id="kTok"></div></article>
+    </div>
+  </section>
+
+  <section class="section" id="activity">
+    <div class="section-head"><div><h2 class="section-title">Activity</h2><div class="section-copy">Queue first; history and diagnostics stay one click away.</div></div></div>
+    <div class="activity">
+      <div class="activity-stack">
+        <article class="card table-card"><div class="table-head"><h3>Queue</h3><span class="chip" id="queueCount">0 waiting</span></div>
+          <div class="scroll"><table><thead><tr><th>#</th><th>job</th><th>requested</th><th>using</th><th>from</th><th>waiting</th></tr></thead><tbody id="q"></tbody></table></div></article>
+        <details class="card" open><summary>Recent jobs</summary><div class="scroll"><table><thead><tr><th>when</th><th>job</th><th>requested</th><th>used</th><th>state</th><th>s</th><th>error</th></tr></thead><tbody id="rj"></tbody></table></div></details>
+        <details class="card"><summary>Events</summary><div class="scroll"><table><thead><tr><th>when</th><th>kind</th><th>job</th><th>detail</th></tr></thead><tbody id="ev"></tbody></table></div></details>
+      </div>
+      <div class="activity-stack">
+        <article class="card"><div class="kicker">Runtime surface</div><div class="kv">
+          <b>driver</b><span id="sysDriver">–</span><b>policy</b><span id="sysPolicy">–</span>
+          <b>resource</b><span id="sysResource">–</span><b>routes</b><span id="sysRoutes">–</span></div></article>
+        <details class="card" open><summary>Per model · 24 h</summary><div class="scroll"><table><thead><tr><th>model</th><th>done</th><th>failed</th><th>avg s</th><th>max s</th></tr></thead><tbody id="pm"></tbody></table></div></details>
+        <details class="card"><summary>Downloads</summary><div class="scroll"><table><thead><tr><th>slug</th><th>ref</th><th>state</th><th>updated</th></tr></thead><tbody id="dl"></tbody></table></div></details>
+      </div>
+    </div>
+  </section>
 </main>
 <script src="/dash/dash.js"></script>
 <script src="/dash/live.js"></script>
