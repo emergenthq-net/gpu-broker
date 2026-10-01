@@ -17,9 +17,9 @@ const BAD_EVENT = /fail|error|lost/;
 const DONE = "done", BAD_STATES = ["failed", "rejected"], TERMINAL = [DONE, ...BAD_STATES];
 const UI_DEFAULTS = { gpu_label: "GPU", resident_label: "the default model", groups: {}, comfy_url: "",
                       power_max_w: 450, temp_max_c: 90 };
-const API = { status: "/v1/status", gpu: "/v1/gpu", stats: "/v1/stats", events: "/v1/events", ui: "/v1/ui",
+const API = { status: "/v1/status", system: "/v1/system", gpu: "/v1/gpu", stats: "/v1/stats", events: "/v1/events", ui: "/v1/ui",
               metrics: "/v1/metrics", catalog: "/v1/catalog", jobs: "/v1/jobs/", sessions: "/v1/sessions",
-              sessionEnd: "/v1/sessions/end" };
+              sessionEnd: "/v1/sessions/end", quiesce: "/v1/admin/quiesce", resume: "/v1/admin/resume" };
 
 // ---- helpers ---------------------------------------------------------------
 let tok = "";
@@ -37,21 +37,25 @@ const authHeaders = (extra = {}) => ({ Authorization: "Bearer " + tok, ...extra 
 
 async function get(path) {
   const r = await fetch(path, { headers: authHeaders() });
-  if (r.status === 401) { $("tok").style.display = "flex"; throw new Error("token"); }
-  return r.json();
+  if (r.status === 401) { $("tok").style.display = "flex"; $("connDot").className = "dot warn"; throw new Error("token"); }
+  let data = {}; try { data = await r.json(); } catch (e) { /* empty response */ }
+  if (!r.ok) throw new Error(data.detail || data.error || (r.status + " " + r.statusText));
+  return data;
 }
 
 async function post(path, body) {
-  const r = await fetch(path, { method: "POST", headers: authHeaders({ "Content-Type": "application/json" }),
+  const extra = body === undefined ? {} : { "Content-Type": "application/json" };
+  const r = await fetch(path, { method: "POST", headers: authHeaders(extra),
                                 body: body === undefined ? undefined : JSON.stringify(body) });
-  return { ok: r.ok, data: await r.json() };
+  let data = {}; try { data = await r.json(); } catch (e) { /* empty response */ }
+  return { ok: r.ok, data };
 }
 
 // Click handling: elements carry data-action; handlers register here (no inline JS, strict CSP).
 const ACTIONS = {};
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-action]");
-  if (el && ACTIONS[el.dataset.action]) ACTIONS[el.dataset.action](el.dataset);
+  if (el && ACTIONS[el.dataset.action]) ACTIONS[el.dataset.action](el.dataset, el);
 });
 
 // ---- site labels -----------------------------------------------------------
@@ -64,7 +68,24 @@ async function loadUi() {
 ACTIONS["save-token"] = () => {
   tok = $("t").value.trim();
   try { localStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* storage disabled */ }
-  $("tok").style.display = "none"; loadUi(); tick();
+  $("tok").style.display = "none"; loadUi(); tick(); if (typeof idxTick === "function") idxTick();
+};
+ACTIONS["clear-token"] = () => {
+  tok = ""; $("t").value = "";
+  try { localStorage.removeItem(TOKEN_KEY); } catch (e) { /* storage disabled */ }
+  $("tok").style.display = "flex";
+};
+ACTIONS["toggle-token"] = () => {
+  $("tok").style.display = $("tok").style.display === "flex" ? "none" : "flex";
+  if ($("tok").style.display === "flex") $("t").focus();
+};
+ACTIONS.refresh = () => { tick(); if (typeof liveTick === "function") liveTick(); if (typeof idxTick === "function") idxTick(); };
+ACTIONS.scheduler = async (_, el) => {
+  el.disabled = true;
+  const path = el.dataset.paused === "true" ? API.resume : API.quiesce + "?wait_s=0";
+  const r = await post(path);
+  if (!r.ok) $("upd").textContent = "action failed";
+  el.disabled = false; tick();
 };
 
 // ---- status ----------------------------------------------------------------
@@ -83,6 +104,7 @@ function drawStatus(st, gpu) {
   const r = st.running, n = (st.inflight || []).length;
   $("run").textContent = r ? (r.resolved || r.requested) : "idle";
   $("runsub").textContent = r ? (n > 1 ? `${n} calls in parallel · ` : `${r.state} · ${ago(r.created)} · `) + r.id : "";
+  $("queueCount").textContent = st.queue.length + " waiting";
   $("q").innerHTML = st.queue.map((j, i) => `<tr><td>${i + 1}</td><td><code>${esc(j.id)}</code></td><td>${esc(j.requested)}</td>
     <td>${esc(j.resolved)}</td><td>${esc(j.requester)}</td><td>${ago(j.created)}</td></tr>`).join("") || empty("q", "empty");
   $("rj").innerHTML = st.recent.map(j => `<tr><td>${ago(j.created)}</td><td><code>${esc(j.id)}</code></td><td>${esc(j.requested)}</td>
@@ -112,14 +134,36 @@ function drawEvents(ev) {
     <td class=mute>${esc(JSON.stringify(e.data).slice(0, DETAIL_CHARS))}</td></tr>`).join("");
 }
 
-function drawSystem(sys) {\n  const s = sys.scheduler || {}, cat = sys.catalog || {}, rt = sys.runtime || {}, res = sys.resource || {};\n  const paused = Boolean(s.paused);\n  document.body.classList.toggle("paused", paused);\n  $("policy").textContent = (s.policy || "scheduler") + (paused ? " · paused" : " · active");\n  $("schedDot").className = "dot " + (paused ? "warn" : "ok");\n  $("schedBtn").dataset.paused = String(paused); $("schedBtn").textContent = paused ? "Resume" : "Quiesce";\n  $("schedSummary").textContent = paused ? "Queue paused" : ((s.queued || 0) + " queued · " + (s.inflight || 0) + " in flight");\n  $("schedDetail").textContent = (s.policy || "–") + " policy · aging " + (s.aging_s ?? "–") + "s · locality-aware";\n  $("modelCount").textContent = (cat.runnable ?? 0) + " / " + (cat.models ?? 0);\n  $("modelSummary").textContent = "runnable / catalog models";\n  $("sysDriver").textContent = rt.driver || "–"; $("sysPolicy").textContent = (s.policy || "–") + " · aging " + (s.aging_s ?? "–") + "s";\n  $("sysResource").textContent = (res.id || "gpu:0") + " · " + gb(res.vram_budget_mib || 0) + " GB budget";\n  const routes = rt.json_routes || []; $("sysRoutes").textContent = routes.length + " JSON · " + (rt.stream_routes || []).length + " streaming";\n  $("driverChip").textContent = "driver · " + (rt.driver || "–"); $("routeChip").textContent = "routes · " + routes.length;\n  const caps = Object.entries(cat.capabilities || {}).sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));\n  $("sysCaps").innerHTML = caps.slice(0,12).map(([cap,n]) => `<span class="chip">${esc(cap)}<strong>${n}</strong></span>`).join("") || `<span class="chip">none declared</span>`;\n}\nasync function tick() {
+function drawSystem(sys) {
+  const s = sys.scheduler || {}, cat = sys.catalog || {}, rt = sys.runtime || {}, res = sys.resource || {};
+  const paused = Boolean(s.paused);
+  document.body.classList.toggle("paused", paused);
+  $("policy").textContent = (s.policy || "scheduler") + (paused ? " · paused" : " · active");
+  $("schedDot").className = "dot " + (paused ? "warn" : "ok");
+  $("schedBtn").dataset.paused = String(paused); $("schedBtn").textContent = paused ? "Resume" : "Quiesce";
+  $("schedSummary").textContent = paused ? "Queue paused" : ((s.queued || 0) + " queued · " + (s.inflight || 0) + " in flight");
+  $("schedDetail").textContent = (s.policy || "–") + " policy · aging " + (s.aging_s ?? "–") + "s · locality-aware";
+  $("modelCount").textContent = (cat.runnable ?? 0) + " / " + (cat.models ?? 0);
+  $("modelSummary").textContent = "runnable / catalog models";
+  $("sysDriver").textContent = rt.driver || "–"; $("sysPolicy").textContent = (s.policy || "–") + " · aging " + (s.aging_s ?? "–") + "s";
+  $("sysResource").textContent = (res.id || "gpu:0") + " · " + gb(res.vram_budget_mib || 0) + " GB budget";
+  const routes = rt.json_routes || []; $("sysRoutes").textContent = routes.length + " JSON · " + (rt.stream_routes || []).length + " streaming";
+  $("driverChip").textContent = "driver · " + (rt.driver || "–"); $("routeChip").textContent = "routes · " + routes.length;
+  const caps = Object.entries(cat.capabilities || {}).sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  $("sysCaps").innerHTML = caps.slice(0,12).map(([cap,n]) => `<span class="chip">${esc(cap)}<strong>${n}</strong></span>`).join("") || `<span class="chip">none declared</span>`;
+}
+async function tick() {
   try {
-    const [st, gpu, sx, ev] = await Promise.all([get(API.status), get(API.gpu), get(API.stats),
-                                                 get(`${API.events}?since=${lastSeq}&limit=${EVENTS_PAGE}`)]);
-    drawStatus(st, gpu); drawStats(sx); drawEvents(ev);
-    $("upd").textContent = "updated " + new Date().toLocaleTimeString();
-  } catch (e) { $("connDot").className = "dot warn"; $("upd").textContent = e.message === "token" ? "token needed" : "error · " + e.message; }
+    const [st, gpu, sx, ev, sys] = await Promise.all([get(API.status), get(API.gpu), get(API.stats),
+                                                 get(`${API.events}?since=${lastSeq}&limit=${EVENTS_PAGE}`), get(API.system)]);
+    drawStatus(st, gpu); drawStats(sx); drawEvents(ev); drawSystem(sys);
+    $("connDot").className = "dot ok";
+    $("upd").textContent = "live · " + new Date().toLocaleTimeString([], {hour:"numeric", minute:"2-digit"});
+  } catch (e) {
+    $("connDot").className = "dot warn";
+    $("upd").textContent = e.message === "token" ? "token needed" : "error · " + e.message;
+  }
 }
 
-if (!tok) $("tok").style.display = "flex";
+if (!tok) $("tok").style.display = "flex"; else $("t").value = tok;
 loadUi(); tick(); setInterval(tick, STATUS_EVERY_MS);
