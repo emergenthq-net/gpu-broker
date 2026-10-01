@@ -252,12 +252,14 @@ Two optional headers on inference requests:
 - `x-priority: interactive|normal|background` declares queue priority. Background callers cannot consume slots reserved for people.
 ## How it works
 
-- **One GPU thread, FIFO.** Residency changes only between jobs, never mid-job.
+- **One GPU residency writer.** Residency changes only between jobs, never mid-job. Pending work is ordered by the configured scheduler policy (`balanced` by default, `fifo` for strict submission order).
 - **Every LLM call holds a pool slot.** Before a switch, the GPU thread closes the pool and
   waits for in-flight calls to finish. Afterwards it reopens the pool on the new resident
   model. A direct chat can only ever reach the model the pool names.
-- **Priority.** Background calls may fill `slots - reserved_interactive` slots, and people may
-  use them all, so a chat never waits behind batch work.
+- **Priority and fairness.** Interactive, normal and background work form priority bands. Under `balanced`, waiting jobs
+  age upward so low-priority work cannot starve; within the same effective band, work for the current resident model
+  is preferred to avoid a needless switch. Background direct calls may fill only `slots - reserved_interactive`;
+  interactive calls may use every slot.
 - **Residency.** Before an LLM starts, ComfyUI is told to `POST /free`. Before a ComfyUI job,
   the resident LLM is stopped. Health checks are re-run rather than trusted, because other
   operators may stop things.
@@ -341,10 +343,13 @@ together, and partial offloading makes both slow.
 
 ## Roadmap
 
-- A demand- and priority-aware scheduler, replacing strict FIFO for queued work.
-- GPU readings for non-NVIDIA cards, and more than one GPU per host.
-- Wiring downloaded files into ComfyUI from the API.
-
+- Explicit resource topology and placement for multiple GPUs/devices per broker.
+- Residency adapters that can sleep/wake an engine without killing its server process when a runtime exposes a safe lifecycle API.
+- Streaming Responses and additional multimodal/audio compatibility surfaces.
+- Runtime metrics ingestion (for example server-native Prometheus endpoints) alongside device metrics.
+- Download → verified integration recipes that can wire model files into supported runtimes.
+- Benchmark/profiling workflows so routing can incorporate measured latency, throughput and switch cost.
+- Optional remote spillover as an explicit policy target, never an implicit network dependency.
 ## Contributing
 
 Tests never touch a real GPU, host or network:
