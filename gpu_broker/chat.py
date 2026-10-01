@@ -42,11 +42,16 @@ def apply_variant(catalog: Catalog, body: Mapping[str, Any]) -> dict[str, Any]:
     return {**body, **overrides, "model": key}
 
 
-def is_interactive(catalog: Catalog, priority: str, requester: str) -> bool:
+def request_priority(catalog: Catalog, priority: str, requester: str) -> Priority:
     p = priority.strip().lower()
     if p in set(Priority):
-        return p == Priority.INTERACTIVE
-    return requester not in catalog.defaults.get("background_requesters", [])
+        return Priority(p)
+    return (Priority.BACKGROUND if requester in catalog.defaults.get("background_requesters", [])
+            else Priority.INTERACTIVE)
+
+
+def is_interactive(catalog: Catalog, priority: str, requester: str) -> bool:
+    return request_priority(catalog, priority, requester) == Priority.INTERACTIVE
 
 
 class DirectChat:
