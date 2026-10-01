@@ -87,6 +87,26 @@ ACTIONS.scheduler = async (_, el) => {
   if (!r.ok) $("upd").textContent = "action failed";
   el.disabled = false; tick();
 };
+ACTIONS["resolve-route"] = async (_, el) => {
+  const kind = $("routeKind").value;
+  const caps = $("routeCaps").value.split(",").map(x => x.trim()).filter(Boolean);
+  el.disabled = true; $("routeResult").textContent = "Resolving…";
+  try {
+    const r = await post("/v1/resolve", { model: "auto", kind, caps });
+    if (!r.ok) throw new Error(r.data.detail || r.data.error || "resolution failed");
+    const d = r.data;
+    if (!d.resolved) {
+      $("routeResult").innerHTML = `<span class="bad">No route</span> · ${esc(d.error || "no compatible model")}`;
+    } else {
+      const capsText = (d.selected?.caps || []).join(", ");
+      $("routeResult").innerHTML = `<strong>${esc(d.resolved)}</strong> · ${esc(d.selected?.runner || "")}` +
+        `${d.selected?.vram_mib ? " · " + gb(d.selected.vram_mib) + " GB" : ""}` +
+        `${capsText ? " · [" + esc(capsText) + "]" : ""}` +
+        `<br>${esc(d.substitution || "exact match")}`;
+    }
+  } catch (e) { $("routeResult").innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+  finally { el.disabled = false; }
+};
 
 // ---- status ----------------------------------------------------------------
 // A one-cell placeholder row spanning the table body `id`'s columns.
@@ -150,6 +170,11 @@ function drawSystem(sys) {
   const routes = rt.json_routes || []; $("sysRoutes").textContent = routes.length + " JSON · " + (rt.stream_routes || []).length + " streaming";
   $("driverChip").textContent = "driver · " + (rt.driver || "–"); $("routeChip").textContent = "routes · " + routes.length;
   const caps = Object.entries(cat.capabilities || {}).sort((a,b) => b[1] - a[1] || a[0].localeCompare(b[0]));
+  const kinds = Object.keys(cat.kinds || {});
+  const routeKind = $("routeKind"), selectedKind = routeKind.value;
+  routeKind.innerHTML = kinds.map(k => `<option value="${esc(k)}">${esc(k)}</option>`).join("");
+  if (kinds.includes(selectedKind)) routeKind.value = selectedKind;
+  $("capHints").innerHTML = caps.map(([cap]) => `<option value="${esc(cap)}"></option>`).join("");
   $("sysCaps").innerHTML = caps.slice(0,12).map(([cap,n]) => `<span class="chip">${esc(cap)}<strong>${n}</strong></span>`).join("") || `<span class="chip">none declared</span>`;
 }
 async function tick() {
