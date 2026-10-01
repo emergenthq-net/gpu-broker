@@ -15,8 +15,8 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
 from ..broker import Broker, validate_request
-from ..chat import Lease, apply_variant, is_interactive
-from ..constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, PRIORITY_HEADER, REQUESTER_HEADER, TERMINAL, JobState, Kind
+from ..chat import Lease, apply_variant, request_priority
+from ..constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, PRIORITY_HEADER, PRIORITY_KEY, REQUESTER_HEADER, TERMINAL, JobState, Kind, Priority
 from .jobs import client
 from .openai import sse
 
@@ -56,12 +56,13 @@ def router(broker: Broker) -> APIRouter:
         stream = bool(body.get("stream"))
         requested = body.get("model") or broker.catalog.defaults["resident"]
         body = {**apply_variant(broker.catalog, body), "kind": body.get("kind", Kind.LLM)}
-        interactive = is_interactive(broker.catalog, request.headers.get(PRIORITY_HEADER, ""), requester)
+        priority = request_priority(broker.catalog, request.headers.get(PRIORITY_HEADER, ""), requester)
+        interactive = priority == Priority.INTERACTIVE
         lease = broker.chat.open(body, requester) if interactive else None
         if lease is not None:
             return direct(lease, body, stream, requested)
 
-        jid, info = broker.submit({**body, INTERACTIVE_KEY: interactive}, requester)
+        jid, info = broker.submit({**body, INTERACTIVE_KEY: interactive, PRIORITY_KEY: priority.value}, requester)
         meta = {"job": jid, **info}
         if info.get("error"):
             raise HTTPException(HTTPStatus.SERVICE_UNAVAILABLE, {"error": info["error"], "x_broker": meta})
