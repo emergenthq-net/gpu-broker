@@ -19,9 +19,7 @@ from .units import UnitRef, unit_ref
 
 URL_SCHEMES = frozenset({"http", "https"})
 TMP_SUFFIX = ".tmp"
-HTTP_PATH = re.compile(r"^/[A-Za-z0-9._~!TMP_SUFFIX = ".tmp"
-\'()*+,;=:@%/-]*$")
-
+HTTP_PATH = re.compile(r"^/[A-Za-z0-9._~/%:@+-]*$")
 
 class Source(TypedDict, total=False):
     hf: str            # Hugging Face repo id
