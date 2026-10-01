@@ -3,6 +3,7 @@ import threading
 import time
 
 from gpu_broker.constants import JobState
+from gpu_broker.settings import Scheduling
 from tests.helpers import WAIT_S, done
 
 
@@ -62,3 +63,26 @@ def test_restart_fails_orphans(broker, tmp_path):
     broker.store.update_job(jid, state=JobState.RUNNING)
     assert broker.store.fail_orphans() == 1
     assert broker.store.job(jid)["state"] == JobState.FAILED
+
+
+def test_balanced_queue_prefers_resident_work_within_same_priority(broker):
+    broker.scheduler.paused.set()
+    remote = submit(broker, "qwen-coder-32b")
+    local = submit(broker, "llama-8b")
+    queued, _, _ = broker.scheduler.snapshot()
+    assert queued[:2] == [local, remote]
+    broker.scheduler.paused.clear()
+    assert done(broker, local)["state"] == JobState.DONE
+    assert done(broker, remote)["state"] == JobState.DONE
+
+
+def test_fifo_policy_preserves_submission_order(broker):
+    broker.scheduler.scheduling = Scheduling(policy="fifo", aging_s=300)
+    broker.scheduler.paused.set()
+    first = submit(broker, "qwen-coder-32b")
+    second = submit(broker, "llama-8b")
+    queued, _, _ = broker.scheduler.snapshot()
+    assert queued[:2] == [first, second]
+    broker.scheduler.paused.clear()
+    assert done(broker, first)["state"] == JobState.DONE
+    assert done(broker, second)["state"] == JobState.DONE
