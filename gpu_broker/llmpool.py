@@ -19,7 +19,7 @@ from typing import Any
 
 from .backends import Backends
 from .catalog import Model
-from .constants import ERR_JOB, JobState
+from .constants import ERR_JOB, OPENAI_PATH_KEY, JobState
 from .store import Store
 
 DEFAULT_SLOTS = 1
@@ -96,7 +96,8 @@ class LlmPool:
 
     def _call(self, jid: str, model: Model, payload: Mapping[str, Any]) -> None:
         try:
-            self.store.update_job(jid, state=JobState.DONE, result=self.backends.llm_chat(model, payload))
+            path = str(payload.get(OPENAI_PATH_KEY, "/v1/chat/completions"))
+            self.store.update_job(jid, state=JobState.DONE, result=self.backends.llm_request(model, path, payload))
         except Exception as e:  # noqa: BLE001 — any failure is reported to the requester, never raised
             self.store.update_job(jid, state=JobState.FAILED, error=str(e)[:ERR_JOB])
         finally:
