@@ -11,9 +11,6 @@ name: publish
 on:
   release:
     types: [published]
-  push:
-    paths:
-      - ".github/workflows/publish.yml"
   workflow_dispatch:
     inputs:
       tag:
@@ -25,7 +22,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: pypi-${{ github.event.release.tag_name || inputs.tag || 'v0.2.0' }}
+  group: pypi-${{ github.event.release.tag_name || inputs.tag }}
   cancel-in-progress: false
 
 jobs:
@@ -38,7 +35,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          TAG="${{ github.event.release.tag_name || inputs.tag || 'v0.2.0' }}"
+          TAG="${{ github.event.release.tag_name || inputs.tag }}"
           case "$TAG" in
             v[0-9]*.[0-9]*.[0-9]*) ;;
             *) echo "tag must look like vX.Y.Z" >&2; exit 2 ;;
@@ -95,7 +92,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v7
         with:
-          name: dist-${{ github.event.release.tag_name || inputs.tag || 'v0.2.0' }}
+          name: dist-${{ github.event.release.tag_name || inputs.tag }}
           path: dist/
 
       - name: Publish package distributions to PyPI
