@@ -223,8 +223,9 @@ nodes that stock ComfyUI does not ship; install those node packs on your ComfyUI
 `ltx25` takes four files in `params`: `unet`, `clip`, `video_vae` and `audio_vae`. Its
 defaults (97 frames at 768x512, 24 fps, 8 steps) took about 5 minutes on an RTX 4090.
 
-The full annotated example is [`examples/catalog.yaml`](examples/catalog.yaml) and the config
-is [`examples/config.yaml`](examples/config.yaml). Every config key and its default is in
+The full annotated example is [`examples/catalog.yaml`](examples/catalog.yaml), the config
+is [`examples/config.yaml`](examples/config.yaml), and [`RUNTIMES.md`](RUNTIMES.md) covers
+llama.cpp, SGLang, TensorRT-LLM, vLLM sleep-mode residency, and shared-daemon Ollama. Every config key and its default is in
 [`gpu_broker/settings.py`](gpu_broker/settings.py); `gpu-broker check` validates both files.
 
 ## API
@@ -344,7 +345,7 @@ together, and partial offloading makes both slow.
 ## Roadmap
 
 - Explicit resource topology and placement for multiple GPUs/devices per broker.
-- Residency adapters that can sleep/wake an engine without killing its server process when a runtime exposes a safe lifecycle API.
+- Additional API-managed residency adapters where a runtime exposes a bounded, safe lifecycle API.
 - Streaming Responses and additional multimodal/audio compatibility surfaces.
 - Runtime metrics ingestion (for example server-native Prometheus endpoints) alongside device metrics.
 - Download → verified integration recipes that can wire model files into supported runtimes.
