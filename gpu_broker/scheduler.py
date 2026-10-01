@@ -17,7 +17,7 @@ from typing import Any
 
 from .backends import Backends
 from .catalog import Catalog
-from .constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, OPENAI_PATH_KEY, SESSION_KEY, Event, JobState, Runner
+from .constants import CHAT_PATH, ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, OPENAI_PATH_KEY, SESSION_KEY, Event, JobState, Runner
 from .llmpool import LlmPool
 from .policy import Candidate, normalize_priority, order
 from .residency import Residency
@@ -153,7 +153,7 @@ class Scheduler:
             self._restore_now = True
             return out
         if m["runner"] == Runner.LLM_UNIT:
-            return self.backends.llm_request(m, payload.get(OPENAI_PATH_KEY, "/v1/chat/completions"), payload)
+            return self.backends.llm_request(m, payload.get(OPENAI_PATH_KEY, CHAT_PATH), payload)
         if "template" not in m:
             raise RuntimeError("session-only model: open it from the dashboard (POST /v1/sessions)")
         graph = TEMPLATES[m["template"]](payload, m.get("params", {}), OUTPUT_PREFIX + jid)
