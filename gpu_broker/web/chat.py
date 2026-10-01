@@ -16,7 +16,18 @@ from fastapi.responses import StreamingResponse
 
 from ..broker import Broker, validate_request
 from ..chat import Lease, apply_variant, request_priority
-from ..constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, PRIORITY_HEADER, PRIORITY_KEY, REQUESTER_HEADER, TERMINAL, JobState, Kind, Priority
+from ..constants import (
+    ERR_EVENT,
+    ERR_JOB,
+    INTERACTIVE_KEY,
+    PRIORITY_HEADER,
+    PRIORITY_KEY,
+    REQUESTER_HEADER,
+    TERMINAL,
+    JobState,
+    Kind,
+    Priority,
+)
 from .jobs import client
 from .openai import sse
 
