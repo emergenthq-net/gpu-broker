@@ -193,11 +193,18 @@ models:
     status: ready
 ```
 
-**Substitution.** If a request names an unknown model, one that isn't installed yet, or one
-that won't fit, the highest-`quality` ready model of the same `kind` whose `caps` cover the
-request runs instead. The response gives the substitute and the reason. If the model can be
-downloaded, the download is queued as well.
+**Capability routing.** A request can name an exact model, or use `model: auto` with `kind` and optional `caps`.
+`auto` selects the highest-`quality` runnable model of that kind whose capabilities cover the request. For native
+`/v1/jobs`, omitting `model` while supplying `kind` or `caps` is equivalent to `auto`.
 
+**Substitution.** If a named model is unknown, unavailable, incompatible with the requested kind/capabilities,
+or too large for the VRAM budget, the best ready compatible model runs instead when one exists. The response always
+gives the substitute and the reason. `POST /v1/resolve` returns the same decision without creating a job, switching
+residency, or starting a download.
+
+**Runtime contracts.** LLM entries may set `health_path` (default `/health`), optional `metrics_path`, and `api_paths`
+to declare the fixed broker routes that the upstream actually supports. This keeps heterogeneous OpenAI-compatible
+servers declarative without allowing arbitrary proxy paths.
 **Bundled templates.** A catalog `template` names one of these graph builders. Some use
 nodes that stock ComfyUI does not ship; install those node packs on your ComfyUI first.
 "Stock" means the nodes ship with a current ComfyUI release.
