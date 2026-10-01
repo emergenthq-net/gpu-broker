@@ -136,8 +136,9 @@ def resolve(catalog: CatalogData, name: str, kind: str | None = None, caps: list
     if key is None:
         return _unknown(catalog, name, kind, capset)
     m = catalog["models"][key]
+    requested_kind = kind
     kind = kind or m.get("kind", "")
-    capset = set(m.get("caps", [])) if caps is None else set(caps)
+    capset = set(m.get("caps", [])) if caps is None and requested_kind is None else set(caps or [])
     missing = capset - set(m.get("caps", []))
     wrong_kind = bool(kind and m.get("kind") != kind)
     if runnable(catalog, key, session) and not wrong_kind and not missing:
