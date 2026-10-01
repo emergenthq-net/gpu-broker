@@ -18,6 +18,7 @@ GH_URL = re.compile(r"^https?://github\.com/[\w.-]+/[\w.-]+/?$")
 REPO_ID = re.compile(r"^[\w.-]+/[\w.-]+$")
 SLUG_MAX = 60
 GH_HOST = "github.com/"
+AUTO_NAMES = frozenset({"auto", "*"})
 
 
 @dataclass
@@ -68,10 +69,11 @@ def runnable(catalog: CatalogData, key: str, session: bool = False) -> bool:
             and m.get("vram_mib", 0) <= budget(catalog))
 
 
-def best_substitute(catalog: CatalogData, kind: str, caps: set[str], exclude: str | None = None) -> str | None:
+def best_substitute(catalog: CatalogData, kind: str, caps: set[str], exclude: str | None = None,
+                    session: bool = False) -> str | None:
     cands = [(m.get("quality", 0), k) for k, m in catalog["models"].items()
              if k != exclude and m.get("kind") == kind and caps <= set(m.get("caps", []))
-             and runnable(catalog, k)]
+             and runnable(catalog, k, session)]
     return max(cands)[1] if cands else None
 
 
@@ -132,6 +134,14 @@ def _why_not(catalog: CatalogData, key: str, m: Model, res: Resolution) -> str:
 def resolve(catalog: CatalogData, name: str, kind: str | None = None, caps: list[str] | None = None,
             session: bool = False) -> Resolution:
     capset = set(caps or [])
+    if name.lower() in AUTO_NAMES:
+        if not kind:
+            return Resolution(requested=name, resolved=None, error="auto routing requires `kind`")
+        if chosen := best_substitute(catalog, kind, capset, session=session):
+            return Resolution(requested=name, resolved=chosen,
+                              substitution=f"auto-selected highest-quality runnable {kind} model '{chosen}'")
+        return Resolution(requested=name, resolved=None,
+                          error=f"no installed {kind} model covers {sorted(capset)}")
     key = lookup(catalog, name)
     if key is None:
         return _unknown(catalog, name, kind, capset)
@@ -150,7 +160,7 @@ def resolve(catalog: CatalogData, name: str, kind: str | None = None, caps: list
         why = f"does not provide capabilities {sorted(missing)}"
     else:
         why = _why_not(catalog, key, m, res)
-    sub = best_substitute(catalog, kind, capset, exclude=key)
+    sub = best_substitute(catalog, kind, capset, exclude=key, session=session)
     if sub:
         res.resolved, res.substitution = sub, f"'{key}' {why}; using '{sub}' instead"
     else:
