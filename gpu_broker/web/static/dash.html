@@ -82,6 +82,10 @@ code{font:12px ui-monospace,SFMono-Regular,Menlo,monospace}
 .chip strong{color:var(--fg);font-weight:650;margin-left:4px}
 .model-controls{display:flex;gap:7px;align-items:center;flex-wrap:wrap}
 .model-controls input{width:min(300px,45vw)}
+.route-lab{margin-bottom:10px}
+.route-lab-body{padding:12px 14px;display:grid;grid-template-columns:150px minmax(180px,1fr) auto;gap:8px;align-items:center}
+.route-result{grid-column:1/-1;border:1px solid var(--line);background:var(--surface2);border-radius:9px;padding:9px 10px;min-height:38px;color:var(--muted);font:12px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;overflow-wrap:anywhere}
+.route-result strong{color:var(--fg)}
 .model-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(245px,1fr));gap:10px}
 .model{position:relative;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:12px;min-height:146px;display:flex;flex-direction:column;gap:7px}
 .model.active{border-color:color-mix(in srgb,var(--ok) 55%,var(--line));box-shadow:inset 0 0 0 1px color-mix(in srgb,var(--ok) 18%,transparent)}
@@ -120,7 +124,7 @@ body.paused .scheduler-state{color:var(--warn)}
   .shell,.topbar-inner{padding-left:12px;padding-right:12px}.brand-sub,.hide-mobile{display:none}
   .overview,.telemetry{grid-template-columns:1fr}.telemetry .wide2{grid-column:span 1}
   .top-actions .pill{display:none}.section-head{align-items:flex-start;flex-direction:column}.section-tools{margin-left:0;width:100%}
-  .model-controls{width:100%}.model-controls input{width:100%;flex:1}.model-grid{grid-template-columns:1fr}
+  .model-controls{width:100%}.model-controls input{width:100%;flex:1}.route-lab-body{grid-template-columns:1fr}.route-result{grid-column:1}.model-grid{grid-template-columns:1fr}
   .big{font-size:21px}.card{padding:12px}
 }
 </style>
@@ -188,6 +192,16 @@ body.paused .scheduler-state{color:var(--warn)}
         </select>
       </div>
     </div>
+    <details class="card route-lab">
+      <summary>Route inspector <span class="chip">no execution</span></summary>
+      <div class="route-lab-body">
+        <select id="routeKind" aria-label="Intent kind"><option value="llm">llm</option></select>
+        <input id="routeCaps" list="capHints" placeholder="capabilities, comma separated · e.g. chat, code" aria-label="Required capabilities">
+        <datalist id="capHints"></datalist>
+        <button class="primary" data-action="resolve-route">Resolve intent</button>
+        <div class="route-result" id="routeResult">Ask what would run before consuming GPU time.</div>
+      </div>
+    </details>
     <div id="ses" class="session-banner">Loading residency…</div>
     <div id="idx" class="model-grid" aria-live="polite"></div>
   </section>
