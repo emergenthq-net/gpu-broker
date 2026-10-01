@@ -18,12 +18,14 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 from .catalog import Model
-from .constants import AUTH_SCHEME, BROKER_FIELDS, CHAT_PATH, ERR_DETAIL, OPENAI_JSON_PATHS
+from .constants import AUTH_SCHEME, BROKER_FIELDS, CHAT_PATH, ERR_DETAIL, OPENAI_JSON_PATHS, ResidencyMode
 from .settings import Comfy, Intervals, Timeouts
 
 JSON = {"Content-Type": "application/json"}
 SCHEMES = frozenset({"http", "https"})   # never file:, ftp: or custom handlers
 HEALTH = "/health"
+OLLAMA_HEALTH, OLLAMA_PS, OLLAMA_CHAT = "/api/version", "/api/ps", "/api/chat"
+VLLM_SLEEP, VLLM_WAKE, VLLM_IS_SLEEPING = "/sleep?level=1", "/wake_up", "/is_sleeping"
 SYSTEM_STATS, FREE, PROMPT, HISTORY, VIEW = "/system_stats", "/free", "/prompt", "/history/", "/view"
 OUTPUT_KINDS = ("images", "videos", "gifs", "audio")
 OUTPUT_TYPE = "output"
@@ -44,17 +46,21 @@ class Backends(Protocol):
     def llm_request(self, model: Model, path: str, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]: ...
+    def llm_api_resident(self, model: Model) -> bool: ...
+    def llm_api_activate(self, model: Model) -> None: ...
+    def llm_api_deactivate(self, model: Model) -> None: ...
     def comfy_alive(self) -> bool: ...
     def comfy_free(self) -> None: ...
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]: ...
     def comfy_queue_len(self) -> int | None: ...
 
 
-def _request(url: str, body: Any = None, headers: Mapping[str, str] | None = None) -> urllib.request.Request:
+def _request(url: str, body: Any = None, headers: Mapping[str, str] | None = None,
+             method: str | None = None) -> urllib.request.Request:
     if urlsplit(url).scheme not in SCHEMES:
         raise ValueError(f"refusing non-HTTP URL {url!r}")
     data = None if body is None else json.dumps(body).encode()
-    return urllib.request.Request(url, data, {**(JSON if data else {}), **(headers or {})})  # noqa: S310 — scheme checked above
+    return urllib.request.Request(url, data, {**(JSON if data else {}), **(headers or {})}, method=method)  # noqa: S310 — scheme checked above
 
 
 class HttpBackends:
@@ -79,7 +85,49 @@ class HttpBackends:
 
     # ---- LLM servers ----------------------------------------------------
     def llm_healthy(self, model: Model) -> bool:
-        return self._ok(_request(model["endpoint"] + model.get("health_path", HEALTH), headers=self._auth(model)))
+        default = OLLAMA_HEALTH if model.get("residency") == ResidencyMode.OLLAMA else HEALTH
+        return self._ok(_request(model["endpoint"] + model.get("health_path", default), headers=self._auth(model)))
+
+    def llm_api_resident(self, model: Model) -> bool:
+        """Whether an API-managed model currently owns GPU residency."""
+        mode = ResidencyMode(model.get("residency", ResidencyMode.UNIT))
+        if mode == ResidencyMode.VLLM_SLEEP:
+            try:
+                state = self._json(_request(model["endpoint"] + VLLM_IS_SLEEPING, headers=self._auth(model)), self.t.health_s)
+                sleeping = state.get("is_sleeping") if isinstance(state, dict) else state
+                return sleeping is False
+            except (OSError, ValueError, TypeError):
+                return False
+        if mode == ResidencyMode.OLLAMA:
+            try:
+                state = self._json(_request(model["endpoint"] + OLLAMA_PS, headers=self._auth(model)), self.t.health_s)
+                wanted = model["served_name"]
+                return any(wanted in {m.get("name"), m.get("model")} for m in state.get("models", []))
+            except (OSError, ValueError, TypeError, AttributeError):
+                return False
+        raise ValueError(f"{mode} is not API-managed residency")
+
+    def llm_api_activate(self, model: Model) -> None:
+        mode = ResidencyMode(model.get("residency", ResidencyMode.UNIT))
+        if mode == ResidencyMode.VLLM_SLEEP:
+            self._json(_request(model["endpoint"] + VLLM_WAKE, headers=self._auth(model), method="POST"), self.t.llm_start_s)
+            return
+        if mode == ResidencyMode.OLLAMA:
+            body = {"model": model["served_name"], "messages": [], "keep_alive": -1, "stream": False}
+            self._json(_request(model["endpoint"] + OLLAMA_CHAT, body, self._auth(model)), self.t.llm_start_s)
+            return
+        raise ValueError(f"{mode} is not API-managed residency")
+
+    def llm_api_deactivate(self, model: Model) -> None:
+        mode = ResidencyMode(model.get("residency", ResidencyMode.UNIT))
+        if mode == ResidencyMode.VLLM_SLEEP:
+            self._json(_request(model["endpoint"] + VLLM_SLEEP, headers=self._auth(model), method="POST"), self.t.llm_start_s)
+            return
+        if mode == ResidencyMode.OLLAMA:
+            body = {"model": model["served_name"], "messages": [], "keep_alive": 0, "stream": False}
+            self._json(_request(model["endpoint"] + OLLAMA_CHAT, body, self._auth(model)), self.t.llm_start_s)
+            return
+        raise ValueError(f"{mode} is not API-managed residency")
 
     def _llm_request(self, model: Model, path: str, payload: Mapping[str, Any], stream: bool | None = None) -> urllib.request.Request:
         """Build a request to a fixed compatibility path on a trusted catalog endpoint."""
