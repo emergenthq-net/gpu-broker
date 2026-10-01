@@ -14,7 +14,8 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..broker import Broker
+from ..broker import Broker, validate_request
+from ..resolve import resolve
 from ..store import Row
 from .openai import model_list
 
@@ -66,6 +67,21 @@ def router(broker: Broker) -> APIRouter:
     def models() -> dict[str, Any]:
         return model_list(broker.catalog)
 
+    @r.post("/v1/resolve")
+    def resolve_request(body: dict[str, Any]) -> dict[str, Any]:
+        """Explain routing without creating a job, switching residency or starting a download."""
+        validate_request(body)
+        name = body.get("model") or broker.catalog.defaults["resident"]
+        result = resolve(broker.catalog.data, name, body.get("kind"), body.get("caps"), session=bool(body.get("session")))
+        selected = broker.catalog.models.get(result.resolved) if result.resolved else None
+        summary = None if selected is None else {
+            k: selected[k] for k in ("kind", "runner", "caps", "vram_mib", "quality", "status") if k in selected
+        }
+        return {
+            "requested": result.requested, "resolved": result.resolved, "substitution": result.substitution,
+            "error": result.error, "notes": result.notes, "download": result.download and result.download.as_dict(),
+            "selected": summary,
+        }
     @r.get("/v1/catalog")
     def catalog() -> dict[str, Any]:
         return dict(broker.catalog.models)
