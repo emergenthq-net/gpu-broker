@@ -31,6 +31,10 @@ timeouts:                 # seconds; every key and its default: gpu_broker/setti
 intervals:
   gpu_sample_s: 2         # local GPU sampler period
 
+scheduling:
+  policy: balanced        # balanced = priority + aging + resident locality; fifo = submission order
+  aging_s: 300            # waiting this long promotes a queued job one priority band
+
 ui:
   gpu_label: NVIDIA GPU               # dashboard GPU card title
   resident_label: the default model   # who holds the GPU when nothing else is running
