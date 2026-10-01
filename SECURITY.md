@@ -76,6 +76,25 @@ The broker's SSH key is pinned on the host by `authorized_keys` `command=` to
 broker can therefore start/stop the listed units, read GPU figures, download public models
 into the models root and link them into ComfyUI — nothing else on the hypervisor.
 
+### API-managed residency
+
+Some catalog models can keep their server process running while gpu-broker releases or
+restores that model's GPU memory. These controls are still bounded by trusted catalog
+configuration:
+
+- `vllm_sleep` can call only vLLM's fixed `/is_sleeping`, level-1 `/sleep` and
+  `/wake_up` paths on the model's configured `endpoint`.
+- `ollama` can call only `/api/version`, `/api/ps` and `/api/chat`; load/unload
+  bodies use the catalog's exact `served_name`, never a model name supplied directly by
+  the HTTP requester.
+- The general compatibility proxy remains a fixed allowlist. `health_path`,
+  `metrics_path` and `api_paths` may narrow or describe the trusted runtime surface but
+  cannot introduce an arbitrary request-controlled URL.
+
+vLLM online sleep controls require its server development mode. vLLM documents those
+endpoints as not suitable for exposure to users. Run that endpoint on a trusted/internal
+interface and put gpu-broker or another access-controlled proxy in front.
+
 ### Docker driver
 
 Access to the Docker socket is root-equivalent on the host. The broker only issues
