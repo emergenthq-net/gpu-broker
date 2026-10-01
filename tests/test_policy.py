@@ -31,7 +31,7 @@ def test_aging_promotes_waiting_work_and_prevents_locality_starvation():
     ]
     # Two 300-second age bands make the old normal job effective-interactive and older
     # than the new interactive job, so residency affinity cannot starve it forever.
-    assert [x.jid for x in order(xs, BALANCED, "resident", 600, 300)][0] == "old-other"
+    assert next(iter(order(xs, BALANCED, "resident", 600, 300))).jid == "old-other"
 
 
 def test_priority_normalization():
