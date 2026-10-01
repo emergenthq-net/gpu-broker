@@ -205,3 +205,10 @@ def test_resolve_is_explainable_and_side_effect_free(client, broker):
 def test_resolve_requires_auth(client):
     r = client.post("/v1/resolve", json={"model": "llama"}, headers={"Authorization": "Bearer nope"})
     assert r.status_code == 401
+
+
+def test_native_job_can_request_capability_without_naming_model(client, broker):
+    r = client.post("/v1/jobs", json={"kind": "video", "caps": ["t2v", "style"], "prompt": "fox"}).json()
+    assert r["requested"] == "auto" and r["resolved"] == "wan2.2-14b-style"
+    assert "auto-selected" in r["substitution"]
+    assert done(broker, r["id"])["state"] == JobState.DONE
