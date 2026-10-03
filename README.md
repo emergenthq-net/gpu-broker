@@ -248,7 +248,7 @@ Details: [SECURITY.md](SECURITY.md). Threat model: [docs/threat-model.md](docs/t
   command="/usr/local/sbin/gpu-broker-ctl",restrict ssh-ed25519 AAAA... gpu-broker
   ```
 
-  - It accepts only `unit`, `gpu`, `gpustream`, `download`, `comfy-link`, `exec-put` and `exec-run`.
+  - It accepts only `unit`, `gpu`, `gpustream`, `download`, `comfy-link` and `exec-put` / `exec-info` / `exec-run` / `exec-clean`.
   - Only for the `<container>:<unit>` pairs in `ALLOW_UNITS` (`/etc/gpu-broker-ctl.conf`) and the recipes in `RECIPES`.
   - It re-validates every argument and logs each call. With no config file it allows nothing.
 - **Dashboard.** The page carries no data and runs under a strict Content-Security-Policy.
