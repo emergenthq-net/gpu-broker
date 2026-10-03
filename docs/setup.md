@@ -12,9 +12,9 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
 
 | flag | effect |
 |---|---|
-| `--dry-run` | detect, then print each file it would write and command it would run. Nothing changes. |
+| `--dry-run` | take every step a real run would, reading what is there, but print each file it would write and command it would run instead. Nothing changes. |
 | `--yes` | never ask, and never run `serve` in the foreground. For scripts and provisioning. |
-| `--dir DIR` | put `config.yaml`, `catalog.yaml` and `broker.env` in `DIR` instead of the default. |
+| `--dir DIR` | put `config.yaml` and `broker.env` (and, without a system service, `catalog.yaml`) in `DIR` instead of the default. |
 
 ## What it does, in order
 
@@ -29,16 +29,42 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
 4. **Creates the API token** in `broker.env`, mode 600.
    - An existing token is kept.
    - Setup prints only its first four characters.
-5. **Starts the broker.**
-   - With systemd, and root or passwordless sudo: it installs `/etc/systemd/system/gpu-broker.service`,
-     then enables and starts it. It restarts the service only if something changed.
-   - Otherwise it prints the exact `serve` command. At a terminal (and without `--yes`) it also
-     runs that command in the foreground; Ctrl-C stops it.
+5. **Starts the broker**, in one of three ways (next section). It restarts an installed service
+   only if something changed. Otherwise it prints the exact `serve` command, and at a terminal
+   (without `--yes`) runs it in the foreground: Ctrl-C stops it, and if it exits early setup
+   says so with its exit code and last lines of output.
 6. **Checks it.** It runs `gpu-broker check` first and stops if that finds problems. After starting,
    it waits up to 60 s for `/health`.
 7. **Opens the dashboard** in your browser and prints its address.
    - Not over SSH, and not on Linux without a display: then it only prints the address.
    - The dashboard asks for the token once; it is in `broker.env`.
+
+## How the broker runs
+
+| model servers found | setup has | installs | runs as |
+|---|---|---|---|
+| `systemctl --user` units | (nothing more) | `~/.config/systemd/user/gpu-broker.service`, with lingering so it survives logout | you |
+| system units, containers, or none | root or passwordless sudo, and systemd | `/etc/systemd/system/gpu-broker.service` | the installation's owner, or a dedicated `gpu-broker` account |
+| any | neither | nothing: prints `serve` | you, in the foreground |
+
+- **Never as root.** A system service runs as the account that owns the gpu-broker installation;
+  when root owns it, setup creates a system account, `gpu-broker`, and runs it as that.
+  - GPU access comes from groups: the unit adds `video` and `render` (and `docker` for the docker
+    driver) where they exist.
+  - Starting and stopping system units goes through `/etc/sudoers.d/gpu-broker`, which lets that
+    account run `systemctl start|stop|is-active -- <unit>` for the catalog's units and nothing
+    else. Setup checks it with `visudo` before putting it in place, and sets `driver.sudo: true`.
+    Add a unit to the catalog later and you add it to that file too.
+  - The catalog lives in `/var/lib/gpu-broker/`, which the account owns, because the broker
+    rewrites it. `/etc/gpu-broker/` (config and `broker.env`) stays root's.
+- **Refuses code others could change.** Before installing a service, setup checks the script, its
+  Python, and everything installed beside the package: only root or the service account may be
+  able to change them, and the account must be able to read them. Install gpu-broker somewhere
+  that passes (a venv you own, or one in `/opt/gpu-broker`) if it does not.
+- **Refuses what cannot work.** A mix of system and `--user` units (one broker controls one kind),
+  or `--user` units when run as root, stops setup before it writes anything.
+- **AMD per-process memory** reads other processes' `/proc` entries, which an ordinary account
+  can do only for its own processes; the totals are unaffected.
 
 ## What it detects
 
@@ -55,6 +81,10 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
   its name or its image.
 - **A unit beats a container.** The driver is `docker` only when every server found runs in a
   container.
+- **Several units fit:** one whose processes hold the server's port wins (or, when setup cannot
+  see that, one whose command line names it), then one that is running. A unit shown not to
+  hold the port is never picked. If it still cannot tell, it picks one and says which, so you
+  can change `unit:` in the catalog.
 - **Idle units:** a matching unit or container that did not answer is reported, not added. Start
   it, then add it to the catalog ([docs/catalog.md](catalog.md)).
 - **No unit at all:** setup still adds the server, under its usual unit name, and tells you to
@@ -64,7 +94,8 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
 
 | file | system install | without root |
 |---|---|---|
-| config, catalog, `broker.env` | `/etc/gpu-broker/` | `~/.config/gpu-broker/` |
+| config, `broker.env` | `/etc/gpu-broker/` | `~/.config/gpu-broker/` |
+| catalog | `/var/lib/gpu-broker/` | `~/.config/gpu-broker/` |
 | database, input staging, downloads | `/var/lib/gpu-broker/` | `~/.local/share/gpu-broker/` |
 | event log | `/var/log/gpu-broker/` | `~/.local/state/gpu-broker/` |
 
@@ -99,8 +130,9 @@ and put it in the catalog to let models share the card.
 Safe at any time. It keeps:
 
 - `config.yaml` and `catalog.yaml`, even when you have edited them;
-- the token in `broker.env`;
-- `gpu-broker.service`, even if it differs from what setup would write now.
+- the token in `broker.env` (read the way systemd reads it: quotes, `export`, the last line wins);
+- `gpu-broker.service` and `/etc/sudoers.d/gpu-broker`, even if they differ from what setup would
+  write now.
 
 To regenerate a file, delete it and run setup again.
 

@@ -11,8 +11,12 @@ and versions follow [Semantic Versioning](https://semver.org/).
     systemd units or Docker containers that run them.
   - Writes the config and catalog for them (the starter files if it finds nothing) and a new
     API token in `broker.env` (mode 600). Existing files and the token are kept.
-  - Installs and starts the `gpu-broker` service with root or passwordless sudo; otherwise
-    prints the `serve` command, and runs it in the foreground at a terminal.
+  - Installs and starts the `gpu-broker` service, never as root: a user service (lingering)
+    for `systemctl --user` model servers; else, with root or passwordless sudo, a system
+    service run as the installation's owner or a dedicated `gpu-broker` account, with a
+    visudo-checked sudoers rule for exactly the catalog's units. It refuses code anyone else
+    could change. Otherwise it prints the `serve` command, and runs it in the foreground at a
+    terminal.
   - Runs `check`, waits for `/health`, and opens the dashboard (not over SSH).
   - `--dry-run`, `--yes`, `--dir`. See `docs/setup.md`.
 - Catalog: `health_path` for LLM servers without `/health` (Ollama: `/api/version`).

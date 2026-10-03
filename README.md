@@ -96,8 +96,10 @@ gpu-broker setup                     # or first see what it would do: gpu-broker
   systemd units or Docker containers that run them;
 - **writes** `config.yaml` and `catalog.yaml` for what it found (the starter files if it found
   nothing), and a new API token in `broker.env` (mode 600);
-- **installs and starts the `gpu-broker` service** when it has root or passwordless sudo.
-  Otherwise it prints the exact `serve` command, and runs it for you when you're at a terminal;
+- **installs and starts the `gpu-broker` service**: a user service if your model servers are
+  `systemctl --user` units, else a system service when it has root or passwordless sudo. The
+  broker never runs as root. Otherwise it prints the exact `serve` command, and runs it for you
+  when you're at a terminal;
 - **runs `check`**, waits until the broker answers, and **opens the dashboard** (not over SSH).
 
 Running it again is safe: it keeps every file it finds, and the token. Details, flags and what

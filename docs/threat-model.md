@@ -147,8 +147,12 @@ host. This file is the reference for security review.
     - Never logged, returned or put in URLs.
   - Only `UPSTREAM_TOKEN_*` variables are loaded as upstream keys (`broker.py`).
     - A catalog `auth_env` naming anything else sends no key.
-  - `gpu-broker setup` (`setup/host.py`) writes a new token to `broker.env`, mode 600, through
-    `install -m 600` when it uses sudo. It prints only the first four characters.
+  - `gpu-broker setup` (`setup/host.py`) writes a new token to `broker.env`, mode 600. Every file
+    it writes goes to a new temporary file in the same folder (created 0600, never following a
+    symlink) that is renamed into place; it refuses to replace a symlink. It prints only the
+    first four characters of the token.
+    - `broker.env` stays in a root-owned folder, since systemd reads it as root; the catalog,
+      which the service rewrites, lives in the service account's data folder instead.
     - It opens the dashboard as `/dash#token=...`: the fragment never reaches a server or a log,
       but the browser's command line holds it while it runs. On a machine other people log in
       to, close that browser, or sign in by hand (the dashboard asks once).
@@ -175,7 +179,7 @@ host. This file is the reference for security review.
 | driver | what it can reach |
 |---|---|
 | Proxmox | Start and stop the listed units, read GPU figures, download public models into the models root, link them into ComfyUI, run the installed recipes on files it supplies. Nothing else on the hypervisor. |
-| systemd | What the sudo rule allows. Keep it to `systemctl start\|stop` of the listed units. |
+| systemd | What the sudo rule allows. Keep it to `systemctl start\|stop` of the listed units. `gpu-broker setup` never runs the broker as root: the service runs as the installation's owner or a dedicated `gpu-broker` account, reaches the GPU through groups (`video`, `render`), and starts and stops system units only through the rule it writes (`/etc/sudoers.d/gpu-broker`, checked by `visudo`), which names `systemctl start\|stop\|is-active -- <unit>` for the catalog's units and nothing else. Setup refuses to install a service whose code anyone but root or that account could change (`setup/service.py`). |
 | Docker | The socket is root-equivalent on the host. Prefer another driver where that matters. |
 
 ## What a token holder can do, by design
