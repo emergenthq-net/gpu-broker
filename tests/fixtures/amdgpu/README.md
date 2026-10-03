@@ -14,7 +14,9 @@ a live card:
   Documentation/gpu/drm-usage-stats.rst. The `pos/flags/mnt_id/ino` lines are the generic
   fdinfo header.
 - `/proc/<pid>/fd/<fd>`: symlinks, as the kernel shows them; only those into `/dev/dri/` are DRM
-  files whose fdinfo is read.
+  files whose fdinfo is read. They are listed in `fd-links.txt` instead of committed (they
+  dangle here, and an sdist drops dangling symlinks); `tests.helpers.amdgpu_fixture()` copies
+  this tree to a temp dir and recreates them.
 
 `vega10/`: a Radeon Pro WX 9100-style card (16 GiB, `power1_average`), an NVIDIA card and a
 second amdgpu device's process that must be skipped, an i915 file, a non-DRM fd, and pid 1600

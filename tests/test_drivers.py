@@ -9,7 +9,7 @@ from gpu_broker.constants import Verb
 from gpu_broker.drivers.local import DockerDriver, SystemdDriver, group_of
 from gpu_broker.drivers.proxmox import ProxmoxDriver
 from gpu_broker.units import unit_ref
-from tests.helpers import FIX
+from tests.helpers import amdgpu_fixture
 
 T = settings.Timeouts()
 CAT_UNITS = [unit_ref("llm-a"), unit_ref({"name": "llm-b"})]
@@ -87,7 +87,7 @@ def test_local_gpu_parsing_and_sample_line(tmp_path):
 
 
 def test_local_drivers_read_an_amd_card_when_nvidia_smi_is_not_installed(tmp_path):
-    amd = FIX / "amdgpu/rdna3"
+    amd = amdgpu_fixture() / "rdna3"
     d = local(DockerDriver, tmp_path, Rec(missing={"nvidia-smi"}), sys_root=str(amd / "sys"), proc_root=str(amd / "proc"))
     assert d.gpu() == (8192, 24576, 99) and d.gpu_probe().startswith("amd (amdgpu sysfs, card0")
     assert d.sample_line() == "8192,24576,99,287.0,64,|llama-server:6144 comfyui:1024"   # groups from the fixture's cgroups

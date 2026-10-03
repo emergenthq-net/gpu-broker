@@ -4,14 +4,14 @@ import os
 
 import pytest
 
-from tests.helpers import FIX
+from tests.helpers import amdgpu_fixture
 from tests.test_drivers import DockerDriver, Rec, T, local
 
 
 def test_local_drivers_flag_processes_they_could_not_read(tmp_path, monkeypatch):
     from gpu_broker.gpu import PROCS_UNREADABLE
     from gpu_broker.gpu import amd as amd_mod
-    amd, real = FIX / "amdgpu/rdna3", os.listdir
+    amd, real = amdgpu_fixture() / "rdna3", os.listdir
 
     def listdir(p):
         if str(p).endswith("2002/fd"):
@@ -23,7 +23,7 @@ def test_local_drivers_flag_processes_they_could_not_read(tmp_path, monkeypatch)
 
 
 def test_local_drivers_never_read_amd_when_nvidia_smi_is_installed_but_failing(tmp_path):
-    amd, slept = FIX / "amdgpu/rdna3", []
+    amd, slept = amdgpu_fixture() / "rdna3", []
     rec = Rec(rc=9)
     d = local(DockerDriver, tmp_path, rec, sys_root=str(amd / "sys"), proc_root=str(amd / "proc"))
     now = [0.0]

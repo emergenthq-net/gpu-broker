@@ -1,12 +1,15 @@
 """Test doubles and helpers shared by the public and deployment test suites."""
 from __future__ import annotations
 
+import atexit
 import dataclasses
+import functools
 import importlib.util
 import json
 import pathlib
 import shutil
 import subprocess
+import tempfile
 import threading
 import time
 import types
@@ -28,6 +31,24 @@ FAST = settings_mod.Intervals(worker_poll_s=0.02, paused_s=0.01, health_poll_s=0
                               session_poll_s=0.001, gpu_sample_s=0.001, sampler_retry_s=0.01,
                               gpu_cache_s=0)
 WAIT_S = 5
+
+
+@functools.cache
+def amdgpu_fixture() -> pathlib.Path:
+    """tests/fixtures/amdgpu with its /proc/<pid>/fd symlinks, built once per run in a temp dir.
+
+    The links are listed in fd-links.txt rather than committed: they point at /dev/dri and
+    other paths that do not exist here, and an sdist drops such dangling symlinks."""
+    src = FIX / "amdgpu"
+    out = pathlib.Path(tempfile.mkdtemp(prefix="gpu-broker-amdgpu-"))
+    atexit.register(shutil.rmtree, out, True)
+    shutil.copytree(src, out, dirs_exist_ok=True)
+    for line in (src / "fd-links.txt").read_text().splitlines():
+        if line and not line.startswith("#"):
+            rel, target = line.split(" ", 1)
+            (out / rel).parent.mkdir(parents=True, exist_ok=True)
+            (out / rel).symlink_to(target)
+    return out
 
 
 def load_leak_scan() -> types.ModuleType:

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.3.2
+
+### Fixed
+- The sdist is self-testing: unpack it, install it with `[dev]`, run `pytest`. `MANIFEST.in`
+  ships `tests/` (with `tests/helpers.py` and the fixtures), `host/`, `examples/` and `scripts/`.
+  The amdgpu fixtures' `/proc/<pid>/fd` symlinks, which an sdist drops because they dangle,
+  are listed in `tests/fixtures/amdgpu/fd-links.txt` and recreated in a temp dir at test time.
+  CI checks this on every change.
+
 ## 0.3.1
 
 ### Changed
