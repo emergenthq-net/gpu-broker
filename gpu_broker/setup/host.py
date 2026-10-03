@@ -53,6 +53,10 @@ class UnsafePath(Exception):
     """A path setup will not write: a symlink (dangling or not) or a folder."""
 
 
+class CannotActAs(PermissionError):
+    """Setup needs `sudo -n -u <account>` and sudo does not allow it."""
+
+
 def run_cmd(argv: list[str], timeout: float = CMD_TIMEOUT_S, **kw: object) -> subprocess.CompletedProcess[str]:
     return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, **kw)  # type: ignore[call-overload,no-any-return]  # noqa: S603
 
@@ -113,6 +117,19 @@ class Host:
     say: Callable[[str], None] = print
     strict: bool = False            # setup has root: never follow a symlink the service account could plant
     did: list[str] = field(default_factory=list)   # what was (or would be) done, for tests
+    acting_as: set[str] = field(default_factory=set)   # accounts `sudo -n -u` is known to work for
+
+    def _as(self, owner: str) -> list[str]:
+        """`sudo -n -u owner`, checked once: a clear stop if sudo does not allow it."""
+        if owner not in self.acting_as:
+            r = ran(self.run, ["sudo", "-n", "-u", owner, "true"])
+            if r.returncode != 0:
+                raise CannotActAs(
+                    f"setup creates the {owner} account's folders as {owner}, and `sudo -n -u {owner} true` "
+                    f"failed ({(r.stderr or r.stdout).strip() or r.returncode}): allow it in sudoers "
+                    f"(e.g. `{_me()} ALL=({owner}) NOPASSWD: ALL`) or run setup as root")
+            self.acting_as.add(owner)
+        return ["sudo", "-n", "-u", owner]
 
     def _note(self, line: str) -> None:
         self.did.append(line)
@@ -192,7 +209,7 @@ class Host:
         if self._test("-L", path):
             raise UnsafePath(f"{path} is a symlink; setup does not create or change a folder through it")
         if owner and controls(path, owner):
-            self._check(ran(self.run, ["sudo", "-n", "-u", owner, "mkdir", "-p", "-m", f"{DIR_MODE:o}", "--", path]), path)
+            self._check(ran(self.run, [*self._as(owner), "mkdir", "-p", "-m", f"{DIR_MODE:o}", "--", path]), path)
             return
         self._check(ran(self.run, ["sudo", "-n", "install", "-d", "-m", f"{DIR_MODE:o}", "--", path]), path)
         if owner:
@@ -245,7 +262,7 @@ class Host:
         if self._test("-L", path) or self._test("-d", path):
             raise UnsafePath(f"{path} is a symlink or a folder; setup does not write through it")
         as_owner = bool(owner) and controls(path, owner or "")
-        who = ["sudo", "-n", "-u", owner or ""] if as_owner else ["sudo", "-n"]
+        who = self._as(owner or "") if as_owner else ["sudo", "-n"]
         r = ran(self.run, [*who, "mktemp", "--", f"{os.path.dirname(path)}/.{os.path.basename(path)}.XXXXXXXX"])
         self._check(r, path)
         tmp = r.stdout.strip()
@@ -303,6 +320,14 @@ def _ids(owner: str) -> tuple[int, int]:
     return pw.pw_uid, pw.pw_gid
 
 
+def _me() -> str:
+    import pwd
+    try:
+        return pwd.getpwuid(os.getuid()).pw_name
+    except KeyError:
+        return str(os.getuid())
+
+
 def _owned_by(path: str, owner: str) -> bool:
     try:
         st = os.lstat(path)
@@ -315,20 +340,15 @@ def _owned_by(path: str, owner: str) -> bool:
 
 
 def controls(path: str, owner: str) -> bool:
-    """`owner` (not root) owns the nearest folder above `path` that exists, or what a symlink there
-    points at: it could swap anything below it, so root must not act on names there."""
-    d = os.path.dirname(os.path.abspath(path))
-    while not os.path.lexists(d):
-        d = os.path.dirname(d)
-    try:
-        uid = _ids(owner)[0]
-    except KeyError:
-        return False
-    if uid == 0:
-        return False
-    with contextlib.suppress(OSError):
-        return uid in (os.lstat(d).st_uid, os.stat(d).st_uid)
-    return False
+    """Someone other than root could change a folder above `path` (any existing folder past
+    `anchor`, not just the nearest): they could rename it and plant a link between setup's check
+    and its command, so root must not act on names there and setup works as `owner` instead.
+    False when `owner` is root, or when every existing folder above `path` is root's alone."""
+    with contextlib.suppress(KeyError):
+        if _ids(owner)[0] == 0:
+            return False
+    base, rest = anchor(path)
+    return len(rest) > 1 and os.path.lexists(os.path.join(base, rest[0]))
 
 
 def _root_only(st: os.stat_result, root_uid: int) -> bool:
