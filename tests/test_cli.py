@@ -40,7 +40,7 @@ def test_serve_refuses_without_token(tmp_path):
 
 def test_check_reports_an_exec_timeout_shorter_than_the_recipes(tmp_path, capsys, monkeypatch):
     from gpu_broker import drivers
-    from gpu_broker.drivers.local import SystemdDriver
+    from gpu_broker.drivers.systemd import SystemdDriver
     from gpu_broker.settings import Timeouts
     rdir = tmp_path / "recipes"
     rdir.mkdir()

@@ -1,121 +1,39 @@
-"""Deployment settings: one YAML file plus environment overrides, as typed, frozen dataclasses.
+"""Loading the deployment settings: one YAML file plus environment overrides.
 
-Precedence is environment > file > the defaults below. The file is $BROKER_CONFIG, else
-DEFAULT_PATH; a missing default file means "all defaults" (systemd driver on this machine,
-ComfyUI and the API on localhost). An unknown key is an error, so a typo never silently
-falls back to a default. Secrets (the API token, model-server keys) are environment-only.
+Precedence is environment > file > the defaults (settingsschema.py, whose classes are
+re-exported here). The file is $BROKER_CONFIG, else DEFAULT_PATH; a missing default file
+means "all defaults" (systemd driver on this machine, ComfyUI and the API on localhost). An
+unknown key is an error, so a typo never silently falls back to a default. Secrets (the API
+token, model-server keys) are environment-only.
 """
 from __future__ import annotations
 
 import dataclasses
-import ipaddress
 import json
 import os
 from collections.abc import Mapping
-from dataclasses import dataclass, field
 from typing import Any
 
 import yaml
 
 from .gpu import check_index
 from .modelmap import parse_map
+from .settingsschema import Comfy as Comfy
+from .settingsschema import Driver as Driver
+from .settingsschema import Inputs as Inputs
+from .settingsschema import Network as Network
+from .settingsschema import Server as Server
+from .settingsschema import Settings as Settings
+from .settingsschema import Ui as Ui
 from .tuning import Gpu as Gpu
 from .tuning import Intervals as Intervals
 from .tuning import Limits as Limits
 from .tuning import Timeouts as Timeouts
-from .units import UnitRef, unit_ref
-
-Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+from .units import unit_ref
 
 DEFAULT_PATH, CONFIG_ENV = "/etc/gpu-broker/config.yaml", "BROKER_CONFIG"
 TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
 SCALARS: Mapping[str, type] = {"int": int, "float": float, "str": str}
-
-
-@dataclass(frozen=True)
-class Server:
-    host: str = "127.0.0.1"   # bind address; expose deliberately (and behind TLS)
-    port: int = 8095
-    # Shutdown waits at most this long for open HTTP connections (a streaming chat, the
-    # dashboard's live feed) before closing them. Keep the service manager's stop timeout above it.
-    graceful_shutdown_s: int = 10
-
-
-@dataclass(frozen=True)
-class Comfy:
-    url: str = "http://127.0.0.1:8188"   # as the broker reaches ComfyUI
-    # ComfyUI's output folder as exec recipes see it: an exec output under it gets a /view URL.
-    output_dir: str = ""
-    public_url: str = ""                 # as browsers reach it (dashboard, output URLs); "" = url
-    unit: UnitRef | None = None          # started if ComfyUI is found down; None = never started
-
-    @property
-    def browser_url(self) -> str:
-        return self.public_url or self.url
-
-
-@dataclass(frozen=True)
-class Driver:
-    kind: str = "systemd"                         # systemd | docker | proxmox
-    allowed_units: tuple[UnitRef, ...] | None = None  # None = catalog units + comfy.unit
-    options: Mapping[str, Any] = field(default_factory=dict)  # driver-specific keyword arguments
-
-
-@dataclass(frozen=True)
-class Inputs:
-    """Input files: images (`image`, `end_image`, `frames`) and a `video`, checked at submit."""
-    max_bytes: int = 20 * 1024 * 1024          # per image, after base64 decoding
-    video_max_bytes: int = 100 * 1024 * 1024   # the video, after decoding
-    max_frames: int = 64                       # images in one `frames` list
-    types: tuple[str, ...] = ("png", "jpeg", "webp")        # image formats, checked by magic bytes
-    video_types: tuple[str, ...] = ("mp4", "mov", "webm")   # video containers, checked the same way
-    allow_urls: bool = False   # accept `<slot>_url`: the broker then fetches caller-chosen URLs
-    fetch_s: float = 30        # one `<slot>_url` download, start to last byte
-    staging_dir: str = "/var/lib/gpu-broker/inputs"   # held here until the job hands them on
-    # `<slot>_url` may only reach public addresses; CIDRs listed here are allowed as well
-    # (e.g. a LAN file host). Loopback, private, link-local and unspecified are refused otherwise.
-    # The broker's own ComfyUI (comfy.url / comfy.public_url host and port) is always allowed.
-    # Parsed once, here: CIDR strings from YAML become network objects.
-    url_allow_networks: tuple[Network, ...] = ()
-
-    def __post_init__(self) -> None:
-        nets = []
-        for cidr in self.url_allow_networks:
-            try:
-                nets.append(ipaddress.ip_network(cidr, strict=False))
-            except ValueError:
-                raise ValueError(f"inputs.url_allow_networks: {cidr!r} is not a network (e.g. 192.168.1.0/24)") from None
-        object.__setattr__(self, "url_allow_networks", tuple(nets))
-
-
-@dataclass(frozen=True)
-class Ui:
-    gpu_label: str = "GPU"
-    resident_label: str = "the default model"
-    power_max_w: float = 450      # top of the dashboard's power chart
-    temp_max_c: float = 90        # top of the temperature chart
-    groups: Mapping[str, Mapping[str, str]] = field(default_factory=dict)  # {group: {label, color}}
-
-
-@dataclass(frozen=True)
-class Settings:
-    catalog: str = "/etc/gpu-broker/catalog.yaml"
-    db: str = "/var/lib/gpu-broker/broker.db"
-    events_jsonl: str = "/var/log/gpu-broker/events.jsonl"  # "" = SQLite only
-    gpu_stream: bool = True
-    server: Server = field(default_factory=Server)
-    comfy: Comfy = field(default_factory=Comfy)
-    driver: Driver = field(default_factory=Driver)
-    gpu: Gpu = field(default_factory=Gpu)
-    timeouts: Timeouts = field(default_factory=Timeouts)
-    intervals: Intervals = field(default_factory=Intervals)
-    limits: Limits = field(default_factory=Limits)
-    inputs: Inputs = field(default_factory=Inputs)
-    ui: Ui = field(default_factory=Ui)
-    # Hosted model names -> catalog models, first matching glob wins: {"gpt-*": "@default"}.
-    # Only names the catalog does not know are mapped. Env: BROKER_MODEL_MAP as a JSON object.
-    model_map: Mapping[str, str] = field(default_factory=dict)
-    source: str | None = None     # the file these came from, for the startup event
 
 
 ENV: Mapping[str, tuple[str, ...]] = {   # env var -> settings path

@@ -1,6 +1,6 @@
-"""Drivers for model servers on the machine the broker runs on: systemd units or Docker
-containers. They share GPU reading (a gpu_broker.gpu probe: nvidia-smi or amdgpu sysfs) and
-model-file handling, and differ only in how a unit is started and stopped.
+"""What the drivers for model servers on the broker's own machine share (systemd.py,
+docker.py): GPU reading (a gpu_broker.gpu probe: nvidia-smi or amdgpu sysfs), model-file
+handling and exec recipes. They differ only in how a unit is started and stopped.
 
 Per-process VRAM is grouped by what owns the process — the systemd unit or Docker container
 found in /proc/<pid>/cgroup, else "host". Inside a container without the host PID namespace
@@ -29,7 +29,7 @@ from . import KILL_AFTER_S, PIPE_DRAIN_S, REAP_WAIT_S, Input, RecipeInfo, Run, c
 HOST_GROUP = "host"
 DOCKER_CGROUP = re.compile(r"docker[-/]([0-9a-f]{12})")
 SYSTEMD_CGROUP = re.compile(r"/([^/\s]+)\.service")
-ACTIVE, RUNNING = "active", "true"   # `systemctl is-active` / `docker inspect .State.Running` output
+ACTIVE = "active"   # `systemctl is-active` output
 GIT_DIR = ".git"
 NVIDIA_SMI, HF, GIT, DOCKER = nvidia.NVIDIA_SMI, "hf", "git", "docker"   # executables, overridable per driver
 SYSTEMD_MODELS_ROOT = "/var/lib/gpu-broker/models"
@@ -49,8 +49,6 @@ def group_of(pid: str, proc: str = "/proc") -> str:
         return m.group(1)
     return HOST_GROUP
 
-
-NO_EXEC = "the docker driver cannot run exec recipes (use the systemd or proxmox driver)"
 
 class LocalDriver:
     """GPU via a probe (settings `gpu`) and files under `models_root`; subclasses implement
@@ -153,45 +151,3 @@ class LocalDriver:
         job); the process group is gone when this returns, so a timeout is an ordinary failure."""
         validate.recipe_call(recipe, jid, [n for n, _ in files])
         return recipes.run_local(self._recipe(recipe), jid, files, self.run_recipe_cmd)
-
-
-class SystemdDriver(LocalDriver):
-    """Units started with systemctl. Needs root, `sudo: true` with a sudoers rule limited to
-    `systemctl start|stop <unit>`, or `user: true` for user units."""
-
-    def __init__(self, sudo: bool = False, user: bool = False, models_root: str = SYSTEMD_MODELS_ROOT,
-                 **kw: Any) -> None:
-        super().__init__(models_root=models_root, **kw)
-        self.base = [*(["sudo", "-n"] if sudo else []), "systemctl", *(["--user"] if user else [])]
-
-    def unit(self, spec: Any, verb: Verb) -> bool:
-        r = self.run([*self.base, verb, "--", self._local(spec, verb)], timeout=self.t.unit_s)
-        return r.stdout.strip() == ACTIVE if verb == Verb.IS_ACTIVE else r.returncode == 0
-
-
-class DockerDriver(LocalDriver):
-    """Containers started and stopped by name. They must already exist (`docker compose
-    create`); the broker needs the Docker socket."""
-
-    def __init__(self, docker: str = DOCKER, models_root: str = DOCKER_MODELS_ROOT, **kw: Any) -> None:
-        super().__init__(models_root=models_root, **kw)
-        self.docker = docker
-
-    def unit(self, spec: Any, verb: Verb) -> bool:
-        name = self._local(spec, verb)
-        if verb == Verb.IS_ACTIVE:
-            r = self.run([self.docker, "inspect", "-f", "{{.State.Running}}", "--", name], timeout=self.t.unit_s)
-            return r.returncode == 0 and r.stdout.strip() == RUNNING
-        argv = ([self.docker, "start", "--", name] if verb == Verb.START else
-                [self.docker, "stop", "-t", str(self.t.container_stop_s), "--", name])
-        return self.run(argv, timeout=self.t.unit_s).returncode == 0
-
-    def recipe_info(self, recipe: str) -> RecipeInfo:
-        raise RuntimeError(NO_EXEC)
-
-    def clean_recipe(self, recipe: str, jid: str) -> None:
-        raise RuntimeError(NO_EXEC)
-
-    def run_recipe(self, recipe: str, jid: str, files: Sequence[tuple[str, Input]], timeout_s: float) -> list[str]:
-        raise RuntimeError(NO_EXEC)
-

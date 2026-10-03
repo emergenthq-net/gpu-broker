@@ -30,7 +30,7 @@ HEADER = """\
 # gpu-broker {what}, written by `gpu-broker setup` from what it found on this machine.
 # Edit freely: setup never overwrites this file. Check it with `gpu-broker -c {config} check`.
 # Every key: https://github.com/emergenthq-net/gpu-broker/blob/main/docs/catalog.md (catalog)
-# and gpu_broker/settings.py (config).
+# and gpu_broker/settingsschema.py (config).
 """
 
 

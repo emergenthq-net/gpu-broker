@@ -9,6 +9,7 @@ resident.
 ```
 web/            HTTP: auth, routes, dashboard            (FastAPI; no logic of its own)
 broker.py       composition root: submit / view / wait   (wires everything below)
+  admission.py    submit: check, resolve, record, stage, queue a job
 chat.py         interactive chat straight to the resident LLM (priority, variants)
 scheduler.py    the GPU thread: FIFO, dispatch, idle restore
   llmpool.py      concurrent calls to the resident LLM
@@ -22,7 +23,8 @@ netguard.py     <slot>_url connections: public addresses only, vetted per connec
 deadline.py     <slot>_url time limit: the fetch deadline, bounded name lookups
 execjob.py      runner exec: staged inputs → driver.run_recipe → outputs
 staging.py      input files on disk between submit and run; upload to ComfyUI
-catalog.py      the model catalog (trusted config) + safe writes
+catalog.py      the loaded model catalog (trusted config) and its safe writes
+  catalogschema.py  catalog entry types and validation rules
 templates/      ComfyUI graph builders                   (pure)
 backends.py     HTTP to LLM servers and ComfyUI          (the only client of configured addresses)
 drivers/        start/stop units, read the GPU, fetch files, run exec recipes  (the only subprocesses of `serve`)
@@ -30,11 +32,14 @@ store.py        SQLite jobs/events/downloads/flags + JSONL event log
 schema.py       the SQLite schema and its migrations
 gpu/            GPU probes: nvidia-smi, amdgpu sysfs + DRM fdinfo; the sample-line format
 metrics.py      GPU samples, job latency/throughput
-settings.py     typed configuration;  constants.py: protocol vocabulary
+settings.py     loading configuration: YAML file + environment
+  settingsschema.py the configuration dataclasses (tuning.py: the tuning sections)
+constants.py    protocol vocabulary
 
 cli.py          the console script: serve, check, init, setup, demo
 setup/          `gpu-broker setup`: detect servers, write config + token, install the service
-                (runs once, at install; its own argv-only subprocesses: systemctl, sudo -n, uv)
+                (runs once, at install; its own argv-only subprocesses: systemctl, sudo -n, uv,
+                useradd, visudo, loginctl)
 starter/        `gpu-broker init`: the starter config and catalog, and the writer setup uses
 browser.py      open a link on this machine's screen, never over SSH (demo, setup)
 demo/           `gpu-broker demo`: the real broker on a simulated card

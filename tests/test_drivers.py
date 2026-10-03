@@ -6,8 +6,10 @@ import pytest
 
 from gpu_broker import drivers, settings
 from gpu_broker.constants import Verb
-from gpu_broker.drivers.local import DockerDriver, SystemdDriver, group_of
+from gpu_broker.drivers.docker import DockerDriver
+from gpu_broker.drivers.local import group_of
 from gpu_broker.drivers.proxmox import ProxmoxDriver
+from gpu_broker.drivers.systemd import SystemdDriver
 from gpu_broker.units import unit_ref
 from tests.helpers import amdgpu_fixture
 

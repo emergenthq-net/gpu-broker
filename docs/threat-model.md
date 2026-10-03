@@ -25,7 +25,7 @@ host. This file is the reference for security review.
 |---|---|---|
 | `BROKER_TOKEN` | the broker's environment (`cli.py`, `web/app.py`) | the only credential: whoever holds it can use the GPU, read every job and quiesce the broker |
 | Upstream model-server keys | env vars `UPSTREAM_TOKEN_*`, named by a catalog entry's `auth_env` (`broker.py`, `backends.py`) | sent to model servers; must never leave in a response, log or URL |
-| Host control | the driver: the Proxmox SSH key (`drivers/proxmox.py`, default `/etc/gpu-broker/id_ed25519`), the systemd sudo rule, or the Docker socket (`drivers/local.py`) | the path from the broker to processes on the host |
+| Host control | the driver: the Proxmox SSH key (`drivers/proxmox.py`, default `/etc/gpu-broker/id_ed25519`), the systemd sudo rule, or the Docker socket (`drivers/docker.py`) | the path from the broker to processes on the host |
 | Model files | `<models_root>/<slug>` and links under ComfyUI's model folders (`drivers/validate.py`, `downloads.py`) | disk space, and what the servers load |
 | Inputs and outputs | `inputs.staging_dir` (mode 0600, `staging.py`), ComfyUI's input and output folders, an exec recipe's `in_dir`/`out_dir` | callers' images and video, and generated results |
 | Job log | SQLite `db` and `events_jsonl` (`store.py`) | full prompts, chat messages and results |
