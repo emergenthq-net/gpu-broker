@@ -68,6 +68,9 @@ jobs:
             exit 3
           }
 
+      - name: CHANGELOG.md has an entry for this version
+        run: python scripts/changelog_entry.py "${{ steps.release.outputs.tag }}"
+
       - name: Build and validate distribution
         run: |
           python -m pip install --upgrade build twine

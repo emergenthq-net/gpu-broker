@@ -4,3 +4,5 @@ graft host
 graft examples
 graft scripts
 global-exclude *.py[co]
+include CHANGELOG.md
+graft docs
