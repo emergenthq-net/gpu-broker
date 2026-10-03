@@ -473,6 +473,9 @@ def main(opts: Options, env: Mapping[str, str] | None = None, m: Machine | None 
     except host.UnsafePath as e:
         say(f"problem  {e}: remove it and run setup again")
         return EXIT_PROBLEMS
+    except host.CannotActAs as e:
+        say(f"problem  {e}")
+        return EXIT_PROBLEMS
     except PermissionError as e:
         say(f"problem  {e}: run setup with sudo, or pass --dir to a folder you can write")
         return EXIT_PROBLEMS

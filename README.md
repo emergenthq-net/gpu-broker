@@ -1,5 +1,12 @@
 # gpu-broker
 
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/img/logo-dark.png">
+    <img src="docs/img/logo-light.png" alt="gpu-broker" width="320">
+  </picture>
+</p>
+
 ## TLDR: just install it
 
 ```bash
@@ -335,9 +342,9 @@ House rules (layers, no magic values, new graphs and drivers): [CONTRIBUTING.md]
 
 ## Changelog
 
+- **0.4.0** (2026-10-03): `gpu-broker setup`, one command from install to a running broker; `gpu-broker init`; docs split into `docs/`.
 - **0.3.2** (2026-10-03): the source distribution is self-testing; unpack it, install it with `[dev]`, run `pytest`.
 - **0.3.1** (2026-10-03): shipped tests use neutral ids and paths; CI scans every release for private names.
-- **Unreleased:** `gpu-broker init` writes a starter config and catalog.
 
 Every release: [CHANGELOG.md](CHANGELOG.md) and [GitHub Releases](https://github.com/emergenthq-net/gpu-broker/releases).
 

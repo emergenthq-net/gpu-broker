@@ -5,6 +5,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-10-03
+
 ### Added
 - `gpu-broker setup`: one command from install to a running broker, asking no questions.
   - Finds the GPU, and llama.cpp, vLLM, Ollama and ComfyUI on their usual ports, with the
@@ -20,7 +22,7 @@ and versions follow [Semantic Versioning](https://semver.org/).
   - Runs `check`, waits for `/health`, and opens the dashboard (not over SSH).
   - `--dry-run`, `--yes`, `--dir`. See `docs/setup.md`.
 - Catalog: `health_path` for LLM servers without `/health` (Ollama: `/api/version`).
-- README: a TLDR block first.
+- README: a TLDR block first, and the logo (light and dark).
 - `gpu-broker init`: writes a starter `config.yaml` and `catalog.yaml` to `/etc/gpu-broker`
   (or `--dir`) and creates the folders they name.
   - Existing files are kept unless `--force`.
@@ -110,7 +112,8 @@ Initial public release.
 - Host drivers: systemd, Docker, and systemd units in Proxmox LXCs via a forced-command script.
 - SQLite job store and JSONL event log.
 
-[Unreleased]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.2...HEAD
+[Unreleased]: https://github.com/emergenthq-net/gpu-broker/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.0...v0.3.1
 [0.3.0]: https://github.com/emergenthq-net/gpu-broker/compare/v0.2.0...v0.3.0

@@ -844,7 +844,8 @@ def test_joining_the_docker_group_is_said_out_loud(tmp_path, monkeypatch, check_
 def test_through_sudo_root_makes_folders_elsewhere_and_chowns_the_name_not_a_link(tmp_path, monkeypatch):
     def no_such_user(owner):
         raise KeyError(owner)
-    monkeypatch.setattr(host, "_ids", no_such_user)          # nobody controls tmp_path: root does the work
+    monkeypatch.setattr(host, "_ids", no_such_user)
+    monkeypatch.setattr(host, "anchor", lambda path: (str(tmp_path), ("lib",)))   # tmp_path as if only root could change it
     cmds = []
     host.Host(dry=False, sudo=True, run=sudo_disk(cmds), strict=True).mkdir(str(tmp_path / "lib"), "svc")
     assert cmds == [["sudo", "-n", "install", "-d", "-m", "755", "--", f"{tmp_path}/lib"],
@@ -861,4 +862,34 @@ def test_through_sudo_a_symlink_only_root_can_see_is_refused(tmp_path):
         return disk(argv, **kw)
     with pytest.raises(host.UnsafePath):
         host.Host(dry=False, sudo=True, run=run, strict=True).mkdir(str(tmp_path / "hidden" / "inputs"), "svc")
+    assert cmds == []
+
+
+def test_a_folder_others_can_change_anywhere_above_counts_not_just_the_nearest(tmp_path, monkeypatch):
+    # data/ is the account's; x/ inside it is not (stands for a root-owned x a root run made). The
+    # account can still rename x and plant x -> /etc, so root must not run `install -d data/x/y`.
+    monkeypatch.setattr(host, "_ids", lambda owner: (os.getuid() + 1, os.getgid()))
+    (tmp_path / "data" / "x").mkdir(parents=True)
+    assert host.controls(str(tmp_path / "data" / "x" / "y"), "svc")
+    cmds = []
+    host.Host(dry=False, sudo=True, run=sudo_disk(cmds), strict=True).mkdir(str(tmp_path / "data" / "x" / "y"), "svc")
+    assert cmds and all(c[:4] == ["sudo", "-n", "-u", "svc"] for c in cmds)
+
+
+def test_below_folders_only_root_can_change_root_does_the_work():
+    assert not host.controls("/usr/gpu-broker-no-such-dir/a", "svc")
+    assert not host.controls("/usr/gpu-broker-no-such-dir", "svc")
+
+
+def test_when_sudo_will_not_act_as_the_account_setup_says_which_rule_it_needs(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "_ids", lambda owner: (os.getuid(), os.getgid()))
+    cmds = []
+    disk = sudo_disk(cmds)
+
+    def run(argv, **kw):
+        if argv[-1] == "true":
+            return subprocess.CompletedProcess(argv, 1, "", "sudo: a password is required")
+        return disk(argv, **kw)
+    with pytest.raises(host.CannotActAs, match=r"ALL=\(svc\) NOPASSWD"):
+        host.Host(dry=False, sudo=True, run=run, strict=True).mkdir(str(tmp_path / "inputs"), "svc")
     assert cmds == []

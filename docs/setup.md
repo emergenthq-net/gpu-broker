@@ -63,8 +63,10 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
   anything inside it for a symlink (say `inputs` -> `/etc`) before setup runs again. So setup
   refuses a symlink wherever it creates a folder or writes a file. As root it reaches each path
   one folder at a time without following links, and sets owners on the open folder. Through
-  sudo, it makes what goes inside the account's folder as the account (`sudo -u`), so root never
-  acts there, and root's own `chown` never follows a link.
+  sudo, it makes anything below a folder someone other than root can change (at any depth, not
+  just the nearest one) as the account (`sudo -u`), so root never acts there, and root's own
+  `chown` never follows a link. If sudo will not run commands as the account, setup stops and
+  names the sudoers rule it needs.
 - **Refuses code others could change.** Before installing a service, setup checks the script, its
   Python, and everything installed beside the package: only root or the service account may be
   able to change them, and the account must be able to read them. Install gpu-broker somewhere
