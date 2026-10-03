@@ -1,5 +1,3 @@
-<p align="center"><img src="docs/img/logo.png" alt="GPU Broker" width="480"></p>
-
 # gpu-broker
 
 ## TLDR: just install it
