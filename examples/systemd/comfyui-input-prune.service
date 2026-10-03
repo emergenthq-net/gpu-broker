@@ -1,0 +1,22 @@
+# Deletes input images the broker uploaded to ComfyUI once their job can no longer need them.
+# ComfyUI has no API to delete an input file, so this runs next to ComfyUI (same machine or
+# container), not in the broker: the broker gets no access to ComfyUI's filesystem.
+#
+# Install beside ComfyUI with comfyui-input-prune.path, which starts it on each upload; set the
+# path to ComfyUI's input folder (here twice and once in the .path unit) and the user ComfyUI runs as. The age (-mmin) must exceed the broker's
+# timeouts.comfy_run_s (default 3600 s): a file is uploaded when its job starts and is read
+# while the graph runs. Files older than that go at the next upload. Only names the broker writes match: broker-<12 hex job id>-<slot>.<ext>.
+[Unit]
+Description=Prune gpu-broker input images from ComfyUI's input folder
+# Started by the .path unit on every upload: a burst of uploads must never hit the start limit,
+# or systemd marks the path unit failed and pruning stops for good.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# User=comfyui
+ExecStart=/usr/bin/find /opt/ComfyUI/input -maxdepth 1 -type f -name broker-????????????-* -mmin +120 -delete
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=/opt/ComfyUI/input

@@ -1,0 +1,14 @@
+# Example exec recipe: Apple SHARP (https://github.com/apple/ml-sharp), one image -> a 3D
+# Gaussian splat .ply. Format: gpu_broker/drivers/recipes.py. Install as
+# /etc/gpu-broker/recipes/sharp.recipe (the systemd driver's `recipes_dir`) and give the catalog
+# entry `runner: exec` with `exec: {recipe: sharp, timeout_s: 660}`. It runs on the broker's
+# machine as the broker's user, with no shell: the job only supplies {jid} and the input files.
+# exec.timeout_s must be at least timeout_s + 10 s (SIGKILL grace) + 15 s (reap) + 30 s: 600 + 55 <= 660.
+# Create /var/lib/gpu-broker/exec/out once, owned by the broker's user: each job gets <jid> in
+# it. examples/systemd/gpu-broker-exec-prune.{path,service} removes old job folders.
+argv=/opt/ml-sharp/.venv/bin/sharp predict -i {in_dir} -o {out_dir} -c {checkpoint} --no-render
+checkpoint=/var/lib/gpu-broker/models/apple-sharp/sharp_2572gikvuh.pt
+in_dir=/var/lib/gpu-broker/exec/in/{jid}
+out_dir=/var/lib/gpu-broker/exec/out/{jid}
+outputs=*.ply
+timeout_s=600

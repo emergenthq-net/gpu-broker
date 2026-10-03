@@ -60,5 +60,5 @@ def test_a_failing_job_is_reported_and_the_thread_survives(broker):
 def test_restart_fails_orphans(broker, tmp_path):
     jid = broker.store.create_job("t", "llama-8b", {})
     broker.store.update_job(jid, state=JobState.RUNNING)
-    assert broker.store.fail_orphans() == 1
+    assert len(broker.store.fail_orphans()) == 1
     assert broker.store.job(jid)["state"] == JobState.FAILED

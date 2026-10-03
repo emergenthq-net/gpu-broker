@@ -42,3 +42,14 @@ def test_driver_options_pass_through_and_units_are_validated(tmp_path):
     assert s.driver.options == {"ssh_target": "root@pve"} and s.driver.allowed_units == (UnitRef("a", "1"),)
     with pytest.raises(ValueError):
         load(tmp_path, "comfy: {unit: '../x'}\n")
+
+
+def test_input_settings_from_file_and_environment(tmp_path):
+    s = load(tmp_path, "inputs: {types: [png], video_types: [mp4], max_bytes: 1000, max_frames: 8}\n"
+                       "comfy: {output_dir: /srv/comfy/output/}\n",
+             {"BROKER_INPUT_URLS": "yes", "BROKER_INPUT_MAX_BYTES": "2048", "BROKER_INPUT_DIR": "/tmp/in"})
+    i = s.inputs
+    assert i.types == ("png",) and i.video_types == ("mp4",) and i.max_bytes == 2048 and i.max_frames == 8
+    assert i.allow_urls is True and i.staging_dir == "/tmp/in" and s.comfy.output_dir == "/srv/comfy/output/"
+    d = load(tmp_path).inputs
+    assert d.allow_urls is False and d.types == ("png", "jpeg", "webp") and d.video_types == ("mp4", "mov", "webm")

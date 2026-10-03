@@ -1,5 +1,6 @@
-# gpu-broker API. GPU work happens in the model servers; this image only needs nvidia-smi
-# (injected by the NVIDIA Container Toolkit with `capabilities: [utility]`), the docker CLI
+# gpu-broker API. GPU work happens in the model servers; this image only reads the GPU: through
+# nvidia-smi (injected by the NVIDIA Container Toolkit with `capabilities: [utility]`), or for
+# AMD through /sys (mount it read-only; examples/docker/compose.rocm.yaml), plus the docker CLI
 # for the docker driver, ssh for the proxmox driver, and git + hf for downloads.
 FROM python:3.12-slim-trixie
 

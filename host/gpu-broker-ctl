@@ -1,7 +1,6 @@
 #!/bin/bash
 # gpu-broker-ctl — the ONLY host action the gpu-broker (proxmox driver) may trigger.
-# Installed at /usr/local/sbin/gpu-broker-ctl on the Proxmox host; invoked via an
-# authorized_keys `command=` restriction, so the verb comes from SSH_ORIGINAL_COMMAND:
+# Installed at /usr/local/sbin/gpu-broker-ctl on the Proxmox host; invoked via an authorized_keys `command=` restriction, so the verb comes from SSH_ORIGINAL_COMMAND:
 #   command="/usr/local/sbin/gpu-broker-ctl",restrict ssh-ed25519 AAAA... gpu-broker
 # Site values come from /etc/gpu-broker-ctl.conf (override path: GPU_BROKER_CTL_CONF).
 set -euo pipefail
@@ -12,31 +11,119 @@ COMFY_MODELS_MOUNT=/mnt/ml-models     # $MODELS as mounted inside $COMFY_CT
 COMFY_MODELS_DIR=/opt/ComfyUI/models  # ComfyUI models dir inside $COMFY_CT
 LOG=/var/log/gpu-broker-ctl.log
 SAMPLE_S=2                            # gpustream period, seconds
+GPU_VENDOR=auto                       # auto | nvidia | amd: which GPU `gpu`/`gpustream` read
+GPU_INDEX=0                           # which card of that vendor
+NV_TIMEOUT_S=10                       # each nvidia-smi call, at most
+GPU_BUDGET_S=8                        # a whole `gpu` reading, auto's choice included (+ ssh_connect_s < gpu_query_s)
+GPU_HELPER="$(dirname "$0")/gpu-broker-gpu"   # reads the GPU (installed next to this script)
+RECIPES=/etc/gpu-broker/recipes       # exec recipes, <name>.recipe (gpu_broker/drivers/recipes.py)
+MAX_PUT_BYTES=268435456               # largest input file exec-put accepts
+KILL_AFTER_S=10                       # SIGKILL this long after a recipe's SIGTERM (reported by exec-info)
+CLEAN_WAIT_S=60                       # reap_job: seconds (elapsed) to keep killing until a scan finds the job gone
+CLEAN_POLL_S=1                        # reap_job: pause between scans
+SCAN_S=15                             # reap_job: one scan of the container's /proc may take this long
+SCAN_KILL_S=5                         # ...then SIGTERM, and SIGKILL this much later (timeout -k)
+LOCKS=/run/gpu-broker-ctl             # per-job lock and cancel files (exec-run vs exec-clean)
+MARK=GPU_BROKER_JOB                   # exec-run tags the job's processes (env MARK=<job id>); reap_job finds them
 CONF="${GPU_BROKER_CTL_CONF:-/etc/gpu-broker-ctl.conf}"
 # shellcheck source=/dev/null
 if [[ -f "$CONF" ]]; then . "$CONF"; fi
+export GPU_VENDOR GPU_INDEX SAMPLE_S NV_TIMEOUT_S GPU_BUDGET_S GPU_CACHE_DIR="$LOCKS" GPU_CONF="$CONF"   # auto: cached until the conf changes
+for n in "$KILL_AFTER_S" "$CLEAN_WAIT_S" "$CLEAN_POLL_S" "$SCAN_S" "$SCAN_KILL_S"; do [[ "$n" =~ ^[0-9]+$ ]] || { echo "conf: timings must be whole seconds" >&2; exit 2; }; done
+STEP_S=$((SCAN_S + SCAN_KILL_S))                         # one bounded `pct exec`, worst case
+REAP_S=$((CLEAN_WAIT_S + 1 + CLEAN_POLL_S + STEP_S))     # reap_job's worst case (SECONDS counts whole seconds)
+bounded(){ timeout -k "$SCAN_KILL_S" "$SCAN_S" "$@"; }
 read -r -a A <<< "${SSH_ORIGINAL_COMMAND:-$*}"
 echo "$(date -Is) ${A[*]}" >> "$LOG"
 safe(){ [[ "$1" =~ ^[A-Za-z0-9._/@:+*?-]+$ && "$1" != *..* && "$1" != -* ]] || { echo "bad arg: $1" >&2; exit 2; }; }
 for a in "${A[@]:1}"; do safe "$a"; done
+
+# load_recipe <name> <job id>: read $RECIPES/<name>.recipe (key=value lines, never sourced)
+# into R_<key>, and set IN/OUT to its directories for this job. The rules match the broker's
+# parser (gpu_broker/drivers/recipes.py; tests/test_host_ctl_parity.py): no CR anywhere, every
+# line a comment, blank or key=value, timeout_s positive, out_dir ending in /{jid}, and a first
+# argv word with no `=` and no leading `-` (it follows `env --`, which would read it as either).
+WORD='^[A-Za-z0-9._/@:+=,{}-]+$'
+bad_recipe(){ echo "bad recipe: $1" >&2; exit 5; }
+load_recipe(){
+  [[ "$1" =~ ^[a-z0-9][a-z0-9_-]{0,40}$ ]] || { echo "bad recipe name" >&2; exit 2; }
+  [[ "$2" =~ ^[0-9a-f]{8,32}$ ]] || { echo "bad job id" >&2; exit 2; }
+  local f="$RECIPES/$1.recipe" line k w
+  [[ -f "$f" ]] || { echo "no such recipe" >&2; exit 4; }
+  R_target=""; R_argv=""; R_checkpoint=""; R_in_dir=""; R_out_dir=""; R_outputs=""; R_timeout_s=""
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    [[ "$line" == *$'\r'* ]] && bad_recipe "carriage return (save it with LF line ends)"
+    [[ "$line" =~ ^[[:space:]]*(#|$) ]] && continue
+    k="${line%%=*}"
+    [[ "$line" == *=* ]] || bad_recipe "not key=value: $line"
+    case "$k" in
+      target|argv|checkpoint|in_dir|out_dir|outputs|timeout_s) printf -v "R_$k" '%s' "${line#*=}" ;;
+      *) bad_recipe "unknown key: $k" ;;
+    esac
+  done < "$f"
+  [[ "$R_target" =~ ^[0-9]+$ ]] || bad_recipe "needs target=<ct>"
+  [[ "$R_timeout_s" =~ ^[0-9]+(\.[0-9]+)?$ && ! "$R_timeout_s" =~ ^0+(\.0+)?$ ]] || bad_recipe "timeout_s must be a positive number"
+  IFS=" " read -r -a R_globs <<< "$R_outputs"   # outputs: globs separated by spaces (not tabs), in order
+  (( ${#R_globs[@]} > 0 )) && [[ -n "$R_argv" ]] || bad_recipe "outputs/argv"
+  for w in "${R_globs[@]}"; do [[ "$w" =~ ^[A-Za-z0-9._*?-]+$ ]] || bad_recipe "outputs glob: $w"; done
+  for d in "$R_in_dir" "$R_out_dir"; do
+    [[ "$d" == /* && "$d" == *"{jid}"* && "$d" =~ $WORD && "$d" != *..* ]] || bad_recipe "dir $d"
+  done
+  [[ "$R_out_dir" == */\{jid\} && "${R_out_dir%/\{jid\}}" != *"{jid}"* ]] || bad_recipe "out_dir must end in /{jid}"
+  set -f
+  for w in $R_argv; do [[ "$w" =~ $WORD && "$w" != *..* ]] || bad_recipe "argv word: $w"; done
+  read -r w _ <<< "$R_argv"
+  [[ "$w" != *=* && "$w" != -* ]] || bad_recipe "argv must start with a program: $w"
+  set +f
+  IN="${R_in_dir//\{jid\}/$2}"; OUT="${R_out_dir//\{jid\}/$2}"
+}
+# Run inside the container: SIGKILL every process whose environment carries the tag ($1), and its
+# process group (workers that setsid or double-fork keep the environment, not the group), then
+# print the pids. The environment, not `pgrep -f`, so the scanner never matches itself. POSIX sh
+# (dash in Debian containers): `kill -s KILL --`, the one spelling every sh's kill accepts. Exits 3
+# when it cannot scan at all: an empty answer must mean "none", never "could not look".
+REAP_SH='m=$1 r=$2
+command -v tr >/dev/null && command -v grep >/dev/null && [ -r "$r/1/environ" ] || exit 3
+for e in "$r"/[0-9]*/environ; do
+  tr "\0" "\n" < "$e" 2>/dev/null | grep -qxF -- "$m" || continue
+  p=${e%/environ}; p=${p##*/}; s=$(cat "$r/$p/stat" 2>/dev/null) || continue
+  set -- ${s##*) }
+  [ "${3:-0}" -gt 1 ] 2>/dev/null && kill -s KILL -- "-$3" 2>/dev/null
+  kill -s KILL -- "$p" 2>/dev/null; echo "$p"
+done
+exit 0'
+# reap_job <ct> <job id>: kill the job's processes until one scan succeeds and finds none (0),
+# or 1 after CLEAN_WAIT_S seconds. A scan that fails (container locked, no /proc) never counts
+# as "none". With a lock fd open on 9, "gone" also needs that lock free (no exec-run in flight).
+reap_job(){
+  local end=$((SECONDS + CLEAN_WAIT_S)) out
+  while :; do
+    if out=$(bounded pct exec "$1" -- sh -c "$REAP_SH" sh "$MARK=$2" /proc 2>/dev/null) && [[ -z "$out" ]]; then
+      [[ "${3:-}" != locked ]] || flock -n 9 && return 0
+    fi
+    (( SECONDS < end )) || return 1
+    sleep "$CLEAN_POLL_S"
+  done
+}
+job_lock(){ mkdir -p -m 700 "$LOCKS"; exec 9>"$LOCKS/$1.lock"; }
+legacy_gpu(){   # gpu-broker-gpu not installed (yet): the NVIDIA-only path that predates it
+  local q=(--format=csv,noheader,nounits) g a pr pid mib ct; [[ "$1" == stream ]] || exec nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu "${q[@]}"
+  while :; do g=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,power.draw,temperature.gpu,clocks.sm "${q[@]}" | tr -d " ")
+    a=$(nvidia-smi --query-compute-apps=pid,used_memory "${q[@]}" | tr -d " "); pr=""
+    while IFS=, read -r pid mib; do [[ -n "$pid" ]] || continue
+      ct=$(grep -o "/lxc/[0-9]*" "/proc/$pid/cgroup" 2>/dev/null | head -1 | cut -d/ -f3) || ct=""; pr+=" ${ct:-host}:$mib"
+    done <<< "$a"; echo "$g|$pr"; sleep "$SAMPLE_S"; done
+}
 
 case "${A[0]:-}" in
   unit)   # unit <ct> <name> start|stop|is-active
     [[ " $ALLOW_UNITS " == *" ${A[1]}:${A[2]} "* ]] || { echo "unit not allowlisted" >&2; exit 3; }
     [[ "${A[3]}" =~ ^(start|stop|is-active)$ ]] || exit 2
     exec pct exec "${A[1]}" -- systemctl "${A[3]}" "${A[2]}" ;;
-  gpu)
-    exec nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu --format=csv,noheader,nounits ;;
-  gpustream)  # one line every $SAMPLE_S s: used,total,util,power,temp,sm|<ct>:<mib> ...
-    while :; do
-      g=$(nvidia-smi --query-gpu=memory.used,memory.total,utilization.gpu,power.draw,temperature.gpu,clocks.sm --format=csv,noheader,nounits | tr -d " ")
-      pr=""; while IFS=, read -r pid mib; do
-        [[ -n "$pid" ]] || continue
-        ct=$(grep -o "/lxc/[0-9]*" "/proc/$pid/cgroup" 2>/dev/null | head -1 | cut -d/ -f3)
-        pr+=" ${ct:-host}:$mib"
-      done < <(nvidia-smi --query-compute-apps=pid,used_memory --format=csv,noheader,nounits | tr -d " ")
-      echo "$g|$pr"; sleep "$SAMPLE_S"
-    done ;;
+  gpu|gpustream)  # gpu: used,total,util; gpustream: every $SAMPLE_S s used,total,util,power,temp,clock|<ct>:<mib> ...
+    v=read; [[ "${A[0]}" == gpu ]] || v=stream   # NVIDIA or AMD (gpu-broker-gpu: GPU_VENDOR, GPU_INDEX)
+    [[ -x "$GPU_HELPER" ]] || legacy_gpu "$v"
+    exec "$GPU_HELPER" "$v" ;;
   download)  # download hf <org/repo> <slug> [include...] | download gh <https://github.com/o/r> <slug>
     [[ "${A[3]}" =~ ^[a-z0-9][a-z0-9.-]{0,63}$ ]] || { echo "bad slug" >&2; exit 2; }
     D="$MODELS/${A[3]}"; mkdir -p "$D"
@@ -54,5 +141,60 @@ case "${A[0]:-}" in
     [[ -f "$MODELS/${A[1]}" ]] || { echo "no such file" >&2; exit 4; }
     [[ "$COMFY_CT" =~ ^[0-9]+$ ]] || { echo "comfy-link disabled (COMFY_CT unset)" >&2; exit 2; }
     exec pct exec "$COMFY_CT" -- ln -sfn "$COMFY_MODELS_MOUNT/${A[1]}" "$COMFY_MODELS_DIR/${A[2]}/$(basename "${A[1]}")" ;;
-  *) echo "usage: unit|gpu|gpustream|download|comfy-link" >&2; exit 2 ;;
+  exec-put)  # exec-put <recipe> <job id> <file name>: the file arrives on stdin
+    load_recipe "${A[1]}" "${A[2]}"
+    [[ "${A[3]:-}" =~ ^[a-z_]{1,20}(-[0-9]{1,4})?\.[a-z0-9]{1,5}$ ]] || { echo "bad file name" >&2; exit 2; }
+    T=$(mktemp); trap 'rm -f "$T"' EXIT
+    head -c $((MAX_PUT_BYTES + 1)) > "$T"
+    (( $(wc -c < "$T") <= MAX_PUT_BYTES )) || { echo "input larger than MAX_PUT_BYTES" >&2; exit 6; }
+    pct exec "$R_target" -- mkdir -p -m 700 -- "$IN"
+    pct push "$R_target" "$T" "$IN/${A[3]}" ;;
+  exec-info)  # exec-info <recipe>: check it as exec-run would; print the timings the broker checks against
+    load_recipe "${A[1]}" 000000000000
+    # exec-clean: the reap plus the bounded input removal. The broker adds its SSH connect time.
+    printf '%s\n' "timeout_s=$R_timeout_s" "kill_after_s=$KILL_AFTER_S" "reap_s=$REAP_S" "clean_wait_s=$((REAP_S + STEP_S))" ;;
+  exec-run)  # exec-run <recipe> <job id>: run it in its container; one `output <path>` line per result.
+    # Exit codes never 255 (ssh's own failure): 7 job processes survive, 8 no output folder,
+    # 9 the program failed, 10 a step failed, 11 cancelled by exec-clean.
+    load_recipe "${A[1]}" "${A[2]}"
+    set -E; trap 'exit 10' ERR
+    set -f; argv=()
+    for w in $R_argv; do
+      w="${w//\{jid\}/${A[2]}}"; w="${w//\{in_dir\}/$IN}"; w="${w//\{out_dir\}/$OUT}"
+      argv+=("${w//\{checkpoint\}/$R_checkpoint}")
+    done
+    # Held until this script and the program's pct session end: exec-clean waits for it, and a
+    # run it cancelled (its SSH session cut before the program started) never starts.
+    job_lock "${A[2]}"; flock 9
+    find "$LOCKS" -type f -mmin +1440 -delete 2>/dev/null || true
+    [[ ! -e "$LOCKS/${A[2]}.cancel" ]] || { echo "job ${A[2]} was cancelled" >&2; exit 11; }
+    trap 'pct exec "$R_target" -- rm -rf -- "$IN" 1>&2 || true' EXIT   # stdout carries only `output` lines
+    # Only <job id> is created, in a parent that must exist, and it takes the parent's owner
+    # (ComfyUI's user, which serves and prunes it): never a root-owned shared folder.
+    P="${OUT%/*}"
+    owner=$(pct exec "$R_target" -- stat -c %u:%g -- "$P" 2>/dev/null) || owner=""
+    [[ "$owner" =~ ^[0-9]+:[0-9]+$ ]] || { echo "output folder $P is missing in CT $R_target: create it, owned by the user that serves outputs (ComfyUI)" >&2; exit 8; }
+    pct exec "$R_target" -- mkdir -m 755 -- "$OUT" 1>&2
+    pct exec "$R_target" -- chown -- "$owner" "$OUT" 1>&2
+    rc=0; pct exec "$R_target" -- timeout --kill-after="$KILL_AFTER_S" "$R_timeout_s" env -- "$MARK=${A[2]}" "${argv[@]}" 1>&2 || rc=$?
+    reap_job "$R_target" "${A[2]}" || { echo "processes of job ${A[2]} still run in CT $R_target" >&2; exit 7; }
+    pct exec "$R_target" -- chown -R -- "$owner" "$OUT" 1>&2 || true   # what the program wrote, as root
+    (( rc == 0 )) || { echo "recipe ${A[1]} exited $rc" >&2; exit 9; }
+    # Each glob's files sorted by name, the globs in recipe order, a file listed once, dotfiles
+    # never (recipes.py). Listed in full before any is printed: a failed find for any glob fails
+    # the run (12), with nothing printed.
+    listing=$(for w in "${R_globs[@]}"; do
+        found=$(pct exec "$R_target" -- find "$OUT" -maxdepth 1 -type f -name "$w" ! -name '.*') || exit 1
+        [[ -z "$found" ]] || LC_ALL=C sort <<<"$found"
+      done) || { echo "could not list the outputs of job ${A[2]} in CT $R_target" >&2; exit 12; }
+    [[ -z "$listing" ]] || awk '!seen[$0]++' <<<"$listing" | sed 's/^/output /' ;;
+  exec-clean)  # exec-clean <recipe> <job id>: stop everything of the job and remove its inputs.
+    # Exits 0 only once a scan finds nothing tagged with the job and no exec-run of it is in
+    # flight (a later one is refused); else 7 after about clean_wait_s.
+    load_recipe "${A[1]}" "${A[2]}"
+    job_lock "${A[2]}"; : > "$LOCKS/${A[2]}.cancel"
+    trap 'bounded pct exec "$R_target" -- rm -rf -- "$IN" 1>&2 || true' EXIT
+    reap_job "$R_target" "${A[2]}" locked && exit 0
+    echo "job ${A[2]} still running in CT $R_target (or an exec-run of it in flight) after ${CLEAN_WAIT_S}s" >&2; exit 7 ;;
+  *) echo "usage: unit|gpu|gpustream|download|comfy-link|exec-put|exec-info|exec-run|exec-clean" >&2; exit 2 ;;
 esac

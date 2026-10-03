@@ -36,7 +36,7 @@ def test_security_headers_and_no_api_docs(client):
 
 
 def test_dashboard_serves_only_its_own_scripts(client):
-    for name in ("dash", "live", "index"):
+    for name in ("dash", "live", "index", "imagejob"):
         assert client.get(f"/dash/{name}.js", headers={"Authorization": ""}).status_code == 200
     for name in ("../app", "dash.html", "..%2Fapp", "nope"):
         assert client.get(f"/dash/{name}.js").status_code == 404
@@ -93,7 +93,7 @@ def test_dashboard_data(client, broker):
     s = client.get("/v1/stats").json()
     assert s["models"]["wan2.2-14b-t2v"]["done"]["n"] == 1 and s["events"]
     assert len(client.get("/v1/events", params={"since": -3}).json()) == 3
-    assert client.get("/v1/gpu").json() == {"used_mib": 8000, "total_mib": 24564, "util_pct": 37}
+    assert client.get("/v1/gpu").json() == {"used_mib": 8000, "total_mib": 24564, "util_pct": 37, "probe": "fake"}
     ui = client.get("/v1/ui").json()
     assert ui["comfy_url"] == broker.settings.comfy.url and ui["power_max_w"] == broker.settings.ui.power_max_w
     m = client.get("/v1/metrics").json()

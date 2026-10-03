@@ -1,8 +1,10 @@
 """Turn a model request into what will actually run: the model itself, a substitute, a
 download, or a reasoned rejection. Pure functions over the catalog — no IO.
 
-A substitute must be the same kind and cover every requested capability; among those the
-highest `quality` wins. The reason is always reported, so a caller never silently gets a
+A substitute must be the same kind, cover every requested capability and take exactly the
+input images the job carries (an image job never lands on a text-only model, and a model
+that needs an image is never picked for a job without one); among those the highest
+`quality` wins. The reason is always reported, so a caller never silently gets a
 different model than it asked for.
 """
 from __future__ import annotations
@@ -11,7 +13,8 @@ import re
 from dataclasses import dataclass, field
 
 from .catalog import CatalogData, Model, Source
-from .constants import DownloadKind, Kind, ModelStatus, Runner
+from .constants import EMBED_CAP, DownloadKind, Kind, ModelStatus, Runner
+from .inputs import accepts
 
 HF_URL = re.compile(r"^https?://huggingface\.co/([\w.-]+/[\w.-]+)")
 GH_URL = re.compile(r"^https?://github\.com/[\w.-]+/[\w.-]+/?$")
@@ -68,10 +71,25 @@ def runnable(catalog: CatalogData, key: str, session: bool = False) -> bool:
             and m.get("vram_mib", 0) <= budget(catalog))
 
 
-def best_substitute(catalog: CatalogData, kind: str, caps: set[str], exclude: str | None = None) -> str | None:
+def caps_for(m: Model, images: frozenset[str]) -> set[str]:
+    """What a model can do for this job: `image_caps` count only when the job carries an input."""
+    return set(m.get("caps", [])) | (set(m.get("image_caps", [])) if images else set())
+
+
+def needed(m: Model, images: frozenset[str]) -> set[str]:
+    """What a stand-in must do for this job: what it uses of the requested model — its
+    `image_caps` when the job carries an image (if it has any), else its `caps`."""
+    return set(m["image_caps"]) if images and m.get("image_caps") else set(m.get("caps", []))
+
+
+def best_substitute(catalog: CatalogData, kind: str, caps: set[str], exclude: str | None = None,
+                    images: frozenset[str] = frozenset()) -> str | None:
+    """The best stand-in. An embedding model (cap `embed`) stands in only for embeddings: it
+    cannot chat, though a chat request asking for no caps would otherwise accept it."""
     cands = [(m.get("quality", 0), k) for k, m in catalog["models"].items()
-             if k != exclude and m.get("kind") == kind and caps <= set(m.get("caps", []))
-             and runnable(catalog, k)]
+             if k != exclude and m.get("kind") == kind and caps <= caps_for(m, images)
+             and (EMBED_CAP in caps or EMBED_CAP not in m.get("caps", []))
+             and accepts(m, images) and runnable(catalog, k)]
     return max(cands)[1] if cands else None
 
 
@@ -87,7 +105,7 @@ def _download_for(src: Source, default_slug: str) -> Download | None:
     return None
 
 
-def _unknown(catalog: CatalogData, name: str, kind: str | None, caps: set[str]) -> Resolution:
+def _unknown(catalog: CatalogData, name: str, kind: str | None, caps: set[str], images: frozenset[str]) -> Resolution:
     res = Resolution(requested=name, resolved=None)
     ref, dl_kind = None, None
     if (m := HF_URL.match(name)):
@@ -103,7 +121,7 @@ def _unknown(catalog: CatalogData, name: str, kind: str | None, caps: set[str]) 
                              quality=0, status=ModelStatus.NEEDS_INTEGRATION.value,
                              source=Source(slug=s, hf=ref) if dl_kind is DownloadKind.HF else Source(slug=s, gh=ref))
         res.notes.append("unknown model: queued for download; needs a runner before it can serve")
-    if kind and (sub := best_substitute(catalog, kind, caps)):
+    if kind and (sub := best_substitute(catalog, kind, caps, images=images)):
         res.resolved = sub
         res.substitution = f"'{name}' is not in the catalog; using closest installed {kind} model '{sub}'"
     if res.resolved is None:
@@ -130,19 +148,20 @@ def _why_not(catalog: CatalogData, key: str, m: Model, res: Resolution) -> str:
 
 
 def resolve(catalog: CatalogData, name: str, kind: str | None = None, caps: list[str] | None = None,
-            session: bool = False) -> Resolution:
+            session: bool = False, images: frozenset[str] = frozenset()) -> Resolution:
+    """`images` are the input image slots the job fills (see inputs.py)."""
     capset = set(caps or [])
     key = lookup(catalog, name)
     if key is None:
-        return _unknown(catalog, name, kind, capset)
+        return _unknown(catalog, name, kind, capset, images)
     m = catalog["models"][key]
     kind = kind or m.get("kind", "")
-    capset = capset or set(m.get("caps", []))
+    capset = capset or needed(m, images)
     if runnable(catalog, key, session):
         return Resolution(requested=name, resolved=key)
     res = Resolution(requested=name, resolved=None)
     why = _why_not(catalog, key, m, res)
-    sub = best_substitute(catalog, kind, capset, exclude=key)
+    sub = best_substitute(catalog, kind, capset, exclude=key, images=images)
     if sub:
         res.resolved, res.substitution = sub, f"'{key}' {why}; using '{sub}' instead"
     else:

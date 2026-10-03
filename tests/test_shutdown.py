@@ -43,7 +43,8 @@ def proxmox_with_real_stream(procs):
         p = subprocess.Popen(STREAM, **kw)
         procs.append(p)
         return p
-    return ProxmoxDriver("root@pve", None, settings.Timeouts(), popen=popen)
+    unreachable = lambda cmd, timeout: subprocess.CompletedProcess(cmd, 255, "", "ssh: no route")  # noqa: E731
+    return ProxmoxDriver("root@pve", None, settings.Timeouts(), popen=popen, run=unreachable)
 
 
 def test_app_shutdown_kills_the_stream_process_and_ends_the_sampler(tmp_path, procs):

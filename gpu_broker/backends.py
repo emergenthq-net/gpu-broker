@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import contextlib
 import json
+import secrets
 import time
 import urllib.error
 import urllib.request
@@ -18,21 +19,26 @@ from typing import Any, Protocol
 from urllib.parse import quote, urlencode, urlsplit
 
 from .catalog import Model
-from .constants import AUTH_SCHEME, BROKER_FIELDS, ERR_DETAIL
+from .constants import AUTH_SCHEME, BROKER_FIELDS, ERR_DETAIL, HTTP_SCHEMES, IMAGE_MIME
 from .settings import Comfy, Intervals, Timeouts
 
 JSON = {"Content-Type": "application/json"}
-SCHEMES = frozenset({"http", "https"})   # never file:, ftp: or custom handlers
-HEALTH, CHAT = "/health", "/v1/chat/completions"
+HEALTH, CHAT, EMBED = "/health", "/v1/chat/completions", "/v1/embeddings"
 SYSTEM_STATS, FREE, PROMPT, HISTORY, VIEW = "/system_stats", "/free", "/prompt", "/history/", "/view"
+UPLOAD = "/upload/image"
+UPLOAD_FIELDS = {"type": "input", "overwrite": "true"}   # into ComfyUI's input folder, as named
 OUTPUT_KINDS = ("images", "videos", "gifs", "audio")
 OUTPUT_TYPE = "output"
 EXECUTION_ERROR = "execution_error"
 STATUS_ERROR = "error"
 CLIENT_ID_PREFIX = "broker-"
+# OpenAI-style SSE framing, shared by every module that reads or writes it.
 SSE_DATA = "data: "
 SSE_JSON = SSE_DATA + "{"
+SSE_DONE = "[DONE]"
+SUMMARY_MARKERS = tuple(f'"{k}"' for k in ("usage", "timings"))   # a line worth parsing for the summary
 STREAM_SUMMARY_KEYS = ("usage", "timings")   # kept from a stream for metrics
+STREAM_OPTIONS = "stream_options"
 ENCODING = "utf-8"
 DECIMALS = 1
 
@@ -43,14 +49,21 @@ class Backends(Protocol):
     def llm_healthy(self, model: Model) -> bool: ...
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]: ...
+    def llm_embed(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]: ...
     def comfy_alive(self) -> bool: ...
     def comfy_free(self) -> None: ...
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]: ...
     def comfy_queue_len(self) -> int | None: ...
+    def comfy_upload(self, name: str, data: bytes, kind: str) -> str: ...
+
+
+def view_url(browser_url: str, filename: str, subfolder: str, kind: str = OUTPUT_TYPE) -> str:
+    """A browser URL for a file in ComfyUI's output (or input) folder, through ComfyUI's /view."""
+    return f"{browser_url}{VIEW}?{urlencode({'filename': filename, 'subfolder': subfolder, 'type': kind})}"
 
 
 def _request(url: str, body: Any = None, headers: Mapping[str, str] | None = None) -> urllib.request.Request:
-    if urlsplit(url).scheme not in SCHEMES:
+    if urlsplit(url).scheme not in HTTP_SCHEMES:   # never file:, ftp: or custom handlers
         raise ValueError(f"refusing non-HTTP URL {url!r}")
     data = None if body is None else json.dumps(body).encode()
     return urllib.request.Request(url, data, {**(JSON if data else {}), **(headers or {})})  # noqa: S310 — scheme checked above
@@ -80,11 +93,19 @@ class HttpBackends:
     def llm_healthy(self, model: Model) -> bool:
         return self._ok(_request(model["endpoint"] + HEALTH, headers=self._auth(model)))
 
-    def _chat_request(self, model: Model, payload: Mapping[str, Any], stream: bool) -> urllib.request.Request:
+    def _chat_request(self, model: Model, payload: Mapping[str, Any], stream: bool | None,
+                      path: str = CHAT) -> urllib.request.Request:
         """The server sees its own served name, not the alias asked for, and none of the broker's fields."""
         body = {k: v for k, v in payload.items() if k not in BROKER_FIELDS}
-        body.update(model=model["served_name"], stream=stream)
-        return _request(model["endpoint"] + CHAT, body, self._auth(model))
+        body.update(model=model["served_name"], **({} if stream is None else {"stream": stream}))
+        if not stream:   # stream_options without stream: true is a 400 on OpenAI-compatible servers
+            body.pop(STREAM_OPTIONS, None)
+        return _request(model["endpoint"] + path, body, self._auth(model))
+
+    def llm_embed(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
+        """One /v1/embeddings call on a server started for embeddings (llama-server --embeddings)."""
+        result: dict[str, Any] = self._json(self._chat_request(model, payload, None, EMBED), self.t.llm_call_s)
+        return result
 
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
         """One non-streamed completion."""
@@ -96,7 +117,7 @@ class HttpBackends:
         with urllib.request.urlopen(self._chat_request(model, payload, True), timeout=self.t.llm_call_s) as r:  # noqa: S310 — built by _request
             for raw in r:
                 line = raw.decode(ENCODING, "replace")
-                if line.startswith(SSE_JSON):
+                if line.startswith(SSE_JSON) and any(m in line for m in SUMMARY_MARKERS):
                     try:
                         chunk = json.loads(line.removeprefix(SSE_DATA))
                     except ValueError:
@@ -119,6 +140,24 @@ class HttpBackends:
             return int(self._json(_request(self.comfy.url + PROMPT), self.t.health_s)["exec_info"]["queue_remaining"])
         except (OSError, ValueError, KeyError, TypeError):
             return None
+
+    def comfy_upload(self, name: str, data: bytes, kind: str) -> str:
+        """Store an input image in ComfyUI (POST /upload/image); returns the name a LoadImage
+        node must use (`subfolder/name` when ComfyUI files it in a subfolder)."""
+        boundary = secrets.token_hex(16)
+        parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
+                 for k, v in UPLOAD_FIELDS.items()]
+        parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{name}"\r\n'
+                     f"Content-Type: {IMAGE_MIME[kind]}\r\n\r\n".encode() + data + b"\r\n")
+        body = b"".join(parts) + f"--{boundary}--\r\n".encode()
+        req = _request(self.comfy.url + UPLOAD)
+        req.data, req.method = body, "POST"
+        req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
+        try:
+            stored = self._json(req, self.t.comfy_http_s)
+        except urllib.error.HTTPError as e:
+            raise RuntimeError(f"ComfyUI rejected the input image: {e.read().decode()[:ERR_DETAIL]}") from None
+        return f"{stored.get('subfolder', '')}/{stored['name']}".lstrip("/")
 
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]:
         """Submit a graph and wait for it; returns output files with browser-reachable URLs."""
@@ -149,7 +188,6 @@ class HttpBackends:
             for kind in OUTPUT_KINDS:
                 for f in node.get(kind, []):
                     sub = f.get("subfolder", "")
-                    query = urlencode({"filename": f["filename"], "subfolder": sub, "type": f.get("type", OUTPUT_TYPE)})
                     outs.append({"file": f"{sub}/{f['filename']}".lstrip("/"),
-                                 "url": f"{self.comfy.browser_url}{VIEW}?{query}"})
+                                 "url": view_url(self.comfy.browser_url, f["filename"], sub, f.get("type", OUTPUT_TYPE))})
         return outs

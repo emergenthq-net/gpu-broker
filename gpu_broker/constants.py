@@ -12,10 +12,34 @@ SESSION_KEY = "session"                   # job payload flag: an interactive ses
 REQUESTER_HEADER = "x-requester"          # optional caller label on /v1/chat/completions
 PRIORITY_HEADER = "x-priority"            # interactive | background; overrides defaults.background_requesters
 INTERACTIVE_KEY = "interactive"           # job payload flag: a person is waiting (may use reserved slots)
+EMBED_KEY = "x_broker_embed"              # job payload flag: an embeddings call, not a chat completion
+EMBED_CAP = "embed"                       # catalog cap of a model that serves /v1/embeddings
+API_KEY_HEADER = "x-api-key"              # the Anthropic SDK's token header (Bearer is the OpenAI SDK's)
+ANTHROPIC_VERSION_HEADER = "anthropic-version"   # sent by Anthropic clients; selects Anthropic shapes
+DEFAULT_TARGET = "@default"               # model_map target meaning the catalog's resident (default) LLM
 # Request fields the broker consumes itself; never forwarded to a model server.
 BROKER_FIELDS = frozenset({"model", "stream", "kind", "caps", "requester", "wait", "wait_s",
-                           INTERACTIVE_KEY, SESSION_KEY})
+                           INTERACTIVE_KEY, SESSION_KEY, EMBED_KEY})
 AUTH_SCHEME = "Bearer"
+
+# Input files. Single slots arrive inline (base64 or a data: URL) or as `<slot>_url`;
+# `frames` is a list of inline images.
+IMAGE_SLOTS = ("image", "end_image")    # start frame / edit source, and an optional end frame
+FRAMES, VIDEO = "frames", "video"        # several views of a scene, or one video of it
+INPUT_SLOTS = (*IMAGE_SLOTS, FRAMES, VIDEO)
+URL_SLOTS = (*IMAGE_SLOTS, VIDEO)        # slots that may come as `<slot>_url`
+URL_SUFFIX = "_url"
+IMAGE_MIME = {"png": "image/png", "jpeg": "image/jpeg", "webp": "image/webp"}   # image format -> MIME type
+VIDEO_MIME = {"mp4": "video/mp4", "mov": "video/quicktime", "webm": "video/webm"}
+HTTP_SCHEMES = frozenset({"http", "https"})   # the only URL schemes the broker contacts
+INPUTS_KEY = "inputs"                    # job payload: what was received per slot (no file data)
+
+
+class InputNeed(StrEnum):
+    """Catalog `inputs: {slot: need}`: whether a model takes a file in that slot."""
+    REQUIRED = "required"
+    OPTIONAL = "optional"
+    ONE_OF = "one_of"     # exactly one of the slots marked one_of must be given
 
 
 class JobState(StrEnum):
@@ -44,6 +68,7 @@ ACTIVE_DOWNLOADS = frozenset({DownloadState.QUEUED, DownloadState.RUNNING, Downl
 class Runner(StrEnum):
     LLM_UNIT = "llm_unit"   # an OpenAI-compatible server the driver starts and stops
     COMFY = "comfy"         # a graph run on the shared ComfyUI
+    EXEC = "exec"           # a command-line program, run by a recipe the host defines
     EXTERNAL = "external"   # downloaded, but nothing can run it yet
 
 
@@ -94,6 +119,9 @@ class Event(StrEnum):
     RES_DETECT_FAILED = "residency.detect_failed"
     RES_IDLE_RESTORE = "residency.idle_restore"
     RES_RESTORE_FAILED = "residency.restore_failed"
+    EXEC_UNCHECKED = "exec.recipe_unchecked"   # its recipe could not be read at startup (checked per job)
+    EXEC_GPU_HELD = "exec.gpu_held"            # a recipe may still run: no job runs until the hold clears
+    GPU_HELD_CLEARED = "exec.gpu_held_cleared"  # by a clean that confirmed the job gone, or an operator
 
 
 RESIDENCY_EVENT_PREFIX = "residency."

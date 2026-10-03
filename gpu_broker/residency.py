@@ -33,6 +33,10 @@ class Residency:
         self.clock, self.sleep = clock, sleep
         self.current: str | None = None      # catalog key of the resident LLM, if any
         self.last_comfy: str | None = None   # last ComfyUI model that ran (its weights may still be loaded)
+        # The GPU sampler's latest reading if fresh and taken after the given wall-clock time,
+        # else None (then the driver is asked). `wall` stamps that time; samples use time.time.
+        self.cached_gpu: Callable[[float], tuple[int, int, int | None] | None] = lambda after: None
+        self.wall: Callable[[], float] = time.time
 
     def detect(self) -> str | None:
         """At startup: adopt whichever LLM unit is already running. A broken driver is logged,
@@ -105,11 +109,37 @@ class Residency:
             if self.current:
                 self._stop_llm(self.current, jid)
                 self.current = None
-            self._comfy_up(jid)
-            if self.last_comfy and self.last_comfy != key:
+            if self.catalog.models[key]["runner"] == Runner.EXEC:
+                # A program outside ComfyUI needs the card to itself: drop ComfyUI's weights too
+                # (best effort — a ComfyUI that is down holds no VRAM).
                 self.backends.comfy_free()
-            self.last_comfy = key
+                self.last_comfy = None
+                self._wait_vram(key, self.wall())   # the LLM stop and the free have returned
+            else:
+                self._comfy_up(jid)
+                if self.last_comfy and self.last_comfy != key:
+                    self.backends.comfy_free()
+                self.last_comfy = key
         self.store.event(Event.RES_RESIDENT, jid, model=key)
+
+    def _wait_vram(self, key: str, freed_at: float) -> None:
+        """Freed VRAM is returned asynchronously (a stopped server's process exits, ComfyUI's
+        /free unloads in the background): poll the GPU until the model's `vram_mib` fits, within
+        timeouts.exec_vram_s. Nothing to wait for if the catalog gives no size. Uses the GPU
+        sampler's reading only if it was taken after `freed_at` (when the evictions returned) —
+        an older one says nothing about the card now — else asks the driver."""
+        need = int(self.catalog.models[key].get("vram_mib") or 0)
+        if not need:
+            return
+        end = self.clock() + self.t.exec_vram_s
+        while True:
+            used, total, _ = self.cached_gpu(freed_at) or self.driver.gpu()
+            if total - used >= need:
+                return
+            if self.clock() >= end:
+                raise RuntimeError(f"{key} needs {need} MiB of VRAM; only {total - used} MiB free after "
+                                   f"{self.t.exec_vram_s:g}s (something else holds the GPU)")
+            self.sleep(self.i.health_poll_s)
 
     def release_comfy(self) -> None:
         """Unload ComfyUI's weights after an image/video run so the default LLM fits again."""

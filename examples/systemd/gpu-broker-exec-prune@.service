@@ -1,0 +1,25 @@
+# Deletes exec job output folders (<root>/<12 hex job id>/, one per job: recipes' out_dir ends in
+# /{jid}) once they are older than the age below. The instance is the output root, escaped
+# with systemd-escape --path (a literal "-" must become \x2d), so one template serves any root:
+#   Proxmox (inside the container that runs the recipes, e.g. ComfyUI's):
+#     systemctl enable --now "gpu-broker-exec-prune@$(systemd-escape --path /opt/ComfyUI/output/broker).path"
+#   systemd driver (on the broker's machine; root of examples/recipes/sharp.recipe):
+#     systemctl enable --now "gpu-broker-exec-prune@$(systemd-escape --path /var/lib/gpu-broker/exec/out).path"
+# Set User= to the folder's owner (ComfyUI's user on Proxmox: gpu-broker-ctl gives each job
+# folder the parent's owner). The age (-mmin, as for comfyui-input-prune) must exceed
+# timeouts.comfy_run_s, and is also how long a job's results stay downloadable: raise it to
+# keep them longer. Only job folders match; ComfyUI's own files in the same root
+# (broker/<job id>_00001_.png) are files and are left alone.
+[Unit]
+Description=Prune old gpu-broker exec job folders in %f
+# Started by the .path unit whenever the root changes: bursts must not hit the start limit.
+StartLimitIntervalSec=0
+
+[Service]
+Type=oneshot
+# User=comfyui
+ExecStart=/usr/bin/find %f -mindepth 1 -maxdepth 1 -type d -name [0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -mmin +120 -exec rm -rf -- {} +
+NoNewPrivileges=yes
+PrivateNetwork=yes
+ProtectSystem=strict
+ReadWritePaths=%f

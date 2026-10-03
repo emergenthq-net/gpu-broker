@@ -25,6 +25,11 @@ KLEIN: Mapping[str, Any] = {"width": 1024, "height": 1024, "seed": 42, "steps": 
 SDXL: Mapping[str, Any] = {"width": 1024, "height": 1024, "seed": 42, "steps": 30, "negative": "low quality, blurry", "cfg": 7.0,
         "sampler": "dpmpp_2m", "scheduler": "karras"}
 
+# The request keys each builder reads; a catalog entry's `defaults` may set them too.
+QWEN_KEYS = SIZE
+CHROMA_KEYS = SIZE
+KLEIN_KEYS = (*SIZE, "cfg")
+SDXL_KEYS = SIZE
 
 def unet_loader(unet: str) -> Node:
     """GGUF files need the ComfyUI-GGUF loader; everything else uses the stock one."""
@@ -34,7 +39,7 @@ def unet_loader(unet: str) -> Node:
 
 
 def qwen_image(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -> dict[str, Node]:
-    d, o = QWEN, options(req, QWEN, SIZE)
+    d, o = QWEN, options(req, QWEN, QWEN_KEYS)
     return {
         "1": unet_loader(params["unet"]),
         "2": node("QwenImage21Cache", model=link("1"), device=d["cache_device"], dtype=DTYPE),
@@ -52,7 +57,7 @@ def qwen_image(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -
 
 
 def chroma(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -> dict[str, Node]:
-    d, o = CHROMA, options(req, CHROMA, SIZE)
+    d, o = CHROMA, options(req, CHROMA, CHROMA_KEYS)
     return {
         "1": node("UNETLoader", unet_name=params["unet"], weight_dtype=DTYPE),
         "2": node("CLIPLoader", clip_name=d["clip"], type=d["clip_type"], device=DEVICE),
@@ -76,7 +81,7 @@ def chroma(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -> di
 def flux2_klein(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -> dict[str, Node]:
     """Klein *base* (undistilled): real CFG and ~20 steps, as in the reference workflow.
     An optional catalog `lora` patches the model only."""
-    d, o = KLEIN, options(req, KLEIN, (*SIZE, "cfg"))
+    d, o = KLEIN, options(req, KLEIN, KLEIN_KEYS)
     g = {
         "1": node("UnetLoaderGGUF", unet_name=params["unet"]),
         "2": node("CLIPLoader", clip_name=d["clip"], type=d["clip_type"], device=DEVICE),
@@ -102,7 +107,7 @@ def flux2_klein(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) 
 
 def sdxl(req: Mapping[str, Any], params: Mapping[str, Any], prefix: str) -> dict[str, Node]:
     """ComfyUI's stock default workflow around one checkpoint (`params.ckpt`)."""
-    d, o = SDXL, options(req, SDXL, SIZE)
+    d, o = SDXL, options(req, SDXL, SDXL_KEYS)
     model, clip, vae = link("1"), link("1", 1), link("1", 2)
     return {
         "1": node("CheckpointLoaderSimple", ckpt_name=params["ckpt"]),

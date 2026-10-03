@@ -59,3 +59,65 @@ def test_variants_and_reservations_are_validated():
     d["models"]["llama-8b"]["reserved_interactive"] = d["models"]["llama-8b"]["slots"]
     with pytest.raises(ValueError, match="reserved_interactive"):
         validate(d)
+
+
+@pytest.mark.parametrize("images", [{"img": "required"}, {"image": "maybe"}, {"end_image": True}])
+def test_rejects_unknown_image_slots_or_needs(images):
+    with pytest.raises(ValueError, match="inputs must map"):
+        validate(bad(inputs=images))
+
+
+@pytest.mark.parametrize(("exec_", "msg"), [
+    ({}, "needs exec.recipe"), ({"recipe": "../x", "timeout_s": 5}, "needs exec.recipe"),
+    ({"recipe": "x"}, "timeout_s"), ({"recipe": "x", "timeout_s": 0}, "timeout_s"),
+    ({"recipe": "x", "timeout_s": True}, "timeout_s"), ({"recipe": "x", "timeout_s": 5, "params": ["Bad-Key"]}, "params"),
+    ({"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": {"m": [1]}}, "names listed in exec.params"),
+    ({"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": [1]}, "names listed in exec.params"),
+    ({"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": {"n": []}}, "non-empty list"),
+    ({"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": {"n": 81}}, "non-empty list"),
+    ({"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": {"n": [[81]]}}, "non-empty list")])
+def test_exec_entries_need_a_recipe_and_a_timeout(exec_, msg):
+    with pytest.raises(ValueError, match=msg):
+        validate(bad(runner="exec", exec=exec_))
+    validate(bad(runner="exec", exec={"recipe": "x", "timeout_s": 5, "params": ["frame_stride"]}))
+    validate(bad(runner="exec", exec={"recipe": "x", "timeout_s": 5, "params": ["n"], "choices": {"n": [81, 161]}}))
+
+
+@pytest.mark.parametrize("model", [{"runner": "llm_unit", "inputs": {"image": "optional"}},
+                                   {"runner": "comfy", "inputs": {"image": "required"}},          # no template
+                                   {"runner": "external", "inputs": {"image": "required"}}])
+def test_only_comfy_templates_and_exec_models_take_inputs(model):
+    with pytest.raises(ValueError, match="take inputs"):
+        validate(bad(**model))
+
+
+def test_comfy_templates_take_only_single_images():
+    with pytest.raises(ValueError, match="take only"):
+        validate(bad(template="wan5b", inputs={"image": "optional", "video": "optional"}))
+
+
+def test_image_caps_need_inputs():
+    with pytest.raises(ValueError, match="image_caps needs"):
+        validate(bad(caps=["t2v"], image_caps=["i2v"]))
+
+
+@pytest.mark.parametrize("frames", [{"need": "one_of", "min": 0, "max": 4}, {"need": "one_of", "min": 5, "max": 4},
+                                    {"need": "one_of", "min": 2}, {"min": 2, "max": 4},
+                                    {"need": "one_of", "min": 2, "max": 4, "step": 1},
+                                    {"need": "one_of", "min": True, "max": 4}, {"need": "one_of", "min": 2, "max": "4"},
+                                    {"need": "sometimes", "min": 2, "max": 4}])
+def test_a_frame_range_is_need_min_max_with_1_le_min_le_max(frames):
+    with pytest.raises(ValueError, match="inputs"):
+        validate(bad(runner="exec", exec={"recipe": "x", "timeout_s": 5}, inputs={"frames": frames, "video": "one_of"}))
+
+
+def test_a_frame_range_counts_as_its_need_and_only_frames_take_one():
+    ok = bad(runner="exec", exec={"recipe": "x", "timeout_s": 5},
+             inputs={"frames": {"need": "one_of", "min": 2, "max": 4}, "video": "one_of"})
+    validate(ok)
+    with pytest.raises(ValueError, match="one_of needs at least two"):
+        validate(bad(runner="exec", exec={"recipe": "x", "timeout_s": 5},
+                     inputs={"frames": {"need": "one_of", "min": 2, "max": 4}}))
+    with pytest.raises(ValueError, match="inputs must map"):
+        validate(bad(runner="exec", exec={"recipe": "x", "timeout_s": 5},
+                     inputs={"image": {"need": "required", "min": 1, "max": 1}}))

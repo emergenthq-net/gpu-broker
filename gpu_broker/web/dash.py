@@ -17,11 +17,12 @@ from fastapi.responses import HTMLResponse, Response
 from ..broker import Broker
 from ..constants import ERR_SHORT
 from ..drivers import DRIVER_ERRORS
+from ..gpu.auto import PROBING
 from ..metrics import job_metrics, summarize
 
 STATIC = files(__package__) / "static"
 PAGE = "dash.html"
-SCRIPTS = frozenset({"dash", "live", "index"})   # the only files /dash/<name>.js serves
+SCRIPTS = frozenset({"dash", "live", "index", "imagejob"})   # the only files /dash/<name>.js serves
 JS_MEDIA_TYPE = "text/javascript"
 HOURS = 3600
 
@@ -53,12 +54,17 @@ def data_router(broker: Broker) -> APIRouter:
     @r.get("/v1/gpu")
     def gpu() -> dict[str, Any]:
         """A reading at most `gpu_cache_s` old: it may be an SSH round trip, so the page must not
-        cause one per poll per viewer."""
+        cause one per poll per viewer. While the GPU reader is still being chosen (or the choice
+        failed), say so at once: choosing may wait on a hung nvidia-smi, never under this lock.
+        A failed choice is remembered, so reading it below raises at once."""
+        if broker.driver.gpu_state().state == PROBING:
+            return {"state": PROBING}
         with lock:
             if time.monotonic() - cache["t"] > s.intervals.gpu_cache_s:
                 try:
                     used, total, util = broker.driver.gpu()
-                    cache["v"] = {"used_mib": used, "total_mib": total, "util_pct": util}
+                    cache["v"] = {"used_mib": used, "total_mib": total, "util_pct": util,
+                                  "probe": broker.driver.gpu_probe()}
                 except DRIVER_ERRORS as e:
                     cache["v"] = {"error": str(e)[:ERR_SHORT]}
                 cache["t"] = time.monotonic()

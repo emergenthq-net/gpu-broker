@@ -1,0 +1,11 @@
+# Runs gpu-broker-exec-prune@<root>.service whenever the output root changes (a job folder is
+# created), so pruning follows jobs rather than a clock. See the .service for the instance name.
+[Unit]
+Description=Prune old gpu-broker exec job folders when %f changes
+
+[Path]
+PathChanged=%f
+Unit=gpu-broker-exec-prune@%i.service
+
+[Install]
+WantedBy=paths.target

@@ -86,3 +86,49 @@ def test_start_failures_and_health_timeouts_raise(res):
     res.backends.llm_healthy = lambda m: False
     with pytest.raises(RuntimeError, match="did not become healthy"):
         res.ensure("qwen-coder-32b")
+
+
+def test_an_exec_model_waits_until_its_vram_is_free(res):
+    """sharp needs 12000 MiB: the GPU shows 20000 used for two readings, then the freed memory."""
+    readings = iter([(20000, 24564), (20000, 24564), (8000, 24564)])
+    res.driver.gpu = lambda: (*next(readings), 0)
+    slept = []
+    res.sleep = slept.append
+    res.ensure("sharp")
+    assert len(slept) == 2 and next(readings, None) is None
+
+
+def test_an_exec_model_gives_up_when_the_vram_never_frees(res):
+    res.driver.vram = (20000, 24564)
+    res.t = settings.Timeouts(exec_vram_s=5)
+    calls = []
+    real = res.driver.gpu
+    res.driver.gpu = lambda: calls.append(1) or real()
+    with pytest.raises(RuntimeError, match=r"sharp needs 12000 MiB of VRAM; only 4564 MiB free after 5s"):
+        res.ensure("sharp")
+    assert 1 < len(calls) < 10   # bounded by the deadline on the injected clock, one reading per tick
+
+
+def test_the_vram_wait_reads_the_samplers_cache_and_ssh_only_when_it_is_stale(res):
+    cache = iter([(20000, 24564, 0), None, (8000, 24564, 0)])   # fresh, stale, fresh
+    res.cached_gpu = lambda after: next(cache)
+    direct = []
+    res.driver.gpu = lambda: direct.append(1) or (20000, 24564, 0)
+    res.ensure("sharp")
+    assert direct == [1] and next(cache, None) is None
+
+
+def test_an_exec_model_without_a_size_does_not_read_the_gpu(res):
+    res.catalog.models["sharp"].pop("vram_mib")
+    res.driver.gpu = lambda: pytest.fail("no size, nothing to wait for")
+    res.ensure("sharp")
+
+
+def test_the_vram_wait_asks_for_readings_taken_after_the_evictions_returned(res):
+    """A sample from before the LLM stop or ComfyUI's free says nothing about the card now."""
+    order, afters = [], []
+    res.backends.comfy_free = lambda: order.append("free")
+    res.wall = lambda: order.append("stamp") or 1000.0
+    res.cached_gpu = lambda after: afters.append(after) or None
+    res.ensure("sharp")
+    assert order == ["free", "stamp"] and afters and set(afters) == {1000.0}

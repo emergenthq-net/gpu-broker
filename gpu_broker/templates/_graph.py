@@ -32,3 +32,16 @@ def save_video(src: Link, prefix: str) -> Node:
 
 def save_image(src: Link, prefix: str) -> Node:
     return node("SaveImage", images=src, filename_prefix=prefix)
+
+
+def load_image(name: str) -> Node:
+    """An input image the broker uploaded to ComfyUI's input folder (see staging.py)."""
+    return node("LoadImage", image=name)
+
+
+def input_image(req: Mapping[str, Any], slot: str, template: str) -> str:
+    """The uploaded file name for a required image slot; a missing one is a caller error."""
+    name = req.get(slot)
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"{template}: needs an input image (`{slot}`)")
+    return name

@@ -1,7 +1,8 @@
 """Application factory: authentication, security headers, routers, and the broker lifecycle.
 
-Every route except /health and the static dashboard shell needs the bearer token from
-$BROKER_TOKEN. With no token configured every call is refused rather than left open.
+Every route except /health and the static dashboard shell needs the token from $BROKER_TOKEN,
+sent as `Authorization: Bearer <token>` (OpenAI SDKs) or `x-api-key: <token>` (Anthropic
+SDKs). With no token configured every call is refused rather than left open.
 """
 from __future__ import annotations
 
@@ -13,9 +14,9 @@ from http import HTTPStatus
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 
-from ..broker import Broker
-from ..constants import APP_NAME, AUTH_SCHEME
-from . import admin, chat, dash, jobs, sessions
+from ..broker import Broker, StagingError
+from ..constants import API_KEY_HEADER, APP_NAME, AUTH_SCHEME
+from . import admin, chat, dash, embeddings, errors, jobs, messages, sessions
 
 Auth = Callable[..., None]
 
@@ -29,13 +30,16 @@ SECURITY_HEADERS = {
 }
 
 
-def make_auth(token: str) -> Auth:
-    """A dependency that accepts exactly `Authorization: Bearer <token>`, compared in constant time."""
-    expected = f"{AUTH_SCHEME} {token}".encode()
+def make_auth(token: str, bearer_only: bool = False) -> Auth:
+    """A dependency that accepts exactly `Authorization: Bearer <token>` or (unless
+    `bearer_only`, as on the admin routes) `x-api-key: <token>`. Both are compared in constant
+    time, every time (no short-circuit on the first)."""
+    bearer, key = f"{AUTH_SCHEME} {token}".encode(), token.encode()
 
     def require_token(request: Request) -> None:
-        given = request.headers.get("authorization", "").encode()
-        if not token or not hmac.compare_digest(given, expected):
+        by_bearer = hmac.compare_digest(request.headers.get("authorization", "").encode(), bearer)
+        by_key = hmac.compare_digest(request.headers.get(API_KEY_HEADER, "").encode(), key) and not bearer_only
+        if not token or not (by_bearer | by_key):
             raise HTTPException(HTTPStatus.UNAUTHORIZED, "bad token")
     return require_token
 
@@ -50,7 +54,7 @@ def create_app(broker: Broker, token: str, start: bool = True) -> FastAPI:
         broker.stop()
 
     app = FastAPI(title=APP_NAME, lifespan=lifespan, docs_url=None, redoc_url=None, openapi_url=None)
-    auth = Depends(make_auth(token))
+    auth, admin_auth = Depends(make_auth(token)), Depends(make_auth(token, bearer_only=True))
 
     @app.middleware("http")
     async def security_headers(request: Request, call_next: Callable[[Request], Awaitable[Response]]) -> Response:
@@ -58,9 +62,11 @@ def create_app(broker: Broker, token: str, start: bool = True) -> FastAPI:
         response.headers.update(SECURITY_HEADERS)
         return response
 
-    @app.exception_handler(ValueError)
-    async def bad_request(_: Request, e: ValueError) -> JSONResponse:
-        return JSONResponse({"detail": str(e)}, status_code=HTTPStatus.BAD_REQUEST)
+    errors.install(app)   # ValueError -> 400, and per-API error shapes
+
+    @app.exception_handler(StagingError)
+    async def staging_failed(_: Request, e: StagingError) -> JSONResponse:
+        return JSONResponse({"detail": str(e), "id": e.jid}, status_code=HTTPStatus.INTERNAL_SERVER_ERROR)
 
     @app.get("/health")
     def health() -> dict[str, bool]:
@@ -68,8 +74,10 @@ def create_app(broker: Broker, token: str, start: bool = True) -> FastAPI:
 
     app.include_router(jobs.router(broker), dependencies=[auth])
     app.include_router(chat.router(broker), dependencies=[auth])
+    app.include_router(messages.router(broker), dependencies=[auth])
+    app.include_router(embeddings.router(broker), dependencies=[auth])
     app.include_router(sessions.router(broker), dependencies=[auth])
-    app.include_router(admin.router(broker), dependencies=[auth])
+    app.include_router(admin.router(broker), dependencies=[admin_auth])   # Bearer only: x-api-key is for SDKs
     app.include_router(dash.data_router(broker), dependencies=[auth])
     app.include_router(dash.page_router())
     return app

@@ -1,0 +1,87 @@
+# gpu-broker demo catalog: what `gpu-broker demo` offers. Every model here is simulated: no
+# weights are downloaded, no server is started, and every endpoint below is never contacted
+# (the demo's simulated backends answer instead). The entries have the same shape as a real
+# catalog (see examples/catalog.yaml), so the dashboard shows exactly what it would in production.
+defaults:
+  resident: qwen3-8b          # the chat model the card goes back to when nothing else needs it
+  idle_restore_s: 15          # short for the demo; a real install waits a couple of minutes
+  session_idle_s: 120
+  session_yield_s: 60
+  session_max_s: 1800
+  background_requesters: [docs-agent, support-bot]
+  vram_total_mib: 24576
+  vram_reserve_mib: 600
+
+models:
+  qwen3-8b:
+    kind: llm
+    runner: llm_unit
+    unit: llama-server-qwen3
+    endpoint: http://127.0.0.1:8081
+    served_name: qwen3-8b
+    vram_mib: 8200
+    slots: 4
+    reserved_interactive: 1
+    caps: [chat, code]
+    quality: 70
+    status: ready
+    aliases: [qwen3, chat]
+
+  llama-3.1-8b:
+    kind: llm
+    runner: llm_unit
+    unit: llama-server-llama31
+    endpoint: http://127.0.0.1:8082
+    served_name: llama-3.1-8b-instruct
+    vram_mib: 7500
+    slots: 4
+    reserved_interactive: 1
+    caps: [chat]
+    quality: 60
+    status: ready
+    aliases: [llama]
+
+  flux.2-klein-4b:
+    kind: image
+    runner: comfy
+    template: flux2_klein
+    params: {unet: flux-2-klein-base-4b-Q8_0.gguf}
+    vram_mib: 14500
+    caps: [t2i]
+    quality: 75
+    status: ready
+    aliases: [flux, klein]
+
+  sdxl-base:
+    kind: image
+    runner: comfy
+    template: sdxl
+    params: {ckpt: sd_xl_base_1.0.safetensors}
+    vram_mib: 9000
+    caps: [t2i]
+    quality: 60
+    status: ready
+    aliases: [sdxl]
+
+  wan2.2-5b:
+    kind: video
+    runner: comfy
+    template: wan5b
+    inputs: {image: optional}
+    vram_mib: 21000
+    caps: [t2v]
+    image_caps: [i2v]
+    quality: 70
+    status: ready
+    aliases: [wan, video]
+
+  trellis:
+    kind: 3d
+    runner: exec
+    exec: {recipe: trellis, timeout_s: 120}
+    inputs: {image: required}
+    vram_mib: 16000
+    caps: [image_to_3d]
+    quality: 70
+    status: ready
+    aliases: [trellis-image-large]

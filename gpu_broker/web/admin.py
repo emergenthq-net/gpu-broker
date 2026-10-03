@@ -4,6 +4,9 @@ A broker with steady LLM traffic is never idle, so a deploy cannot wait for a ga
 POST /v1/admin/quiesce stops the GPU thread taking new jobs, closes the direct chat path,
 and waits (up to `wait_s`) for in-flight calls to finish. Jobs still queued at the restart are failed at startup as
 orphans; clients retry them. POST /v1/admin/resume undoes a quiesce without restarting.
+
+POST /v1/admin/gpu-held/clear acknowledges a GPU hold (holds.py) after an operator has made
+sure the held job's processes are gone; resume and restarts leave a hold in place.
 """
 from __future__ import annotations
 
@@ -13,6 +16,7 @@ from fastapi import APIRouter
 
 from ..broker import Broker
 from ..constants import Event
+from ..holds import BY_OPERATOR
 
 
 def router(broker: Broker) -> APIRouter:
@@ -32,6 +36,10 @@ def router(broker: Broker) -> APIRouter:
         sched.pool.reopen(broker.residency.current)
         sched.paused.clear()
         broker.store.event(Event.RESUME)
-        return {"paused": False}
+        return {"paused": False, "gpu_held": sched.hold.get() is not None}
+
+    @r.post("/v1/admin/gpu-held/clear")
+    def clear_gpu_held() -> dict[str, Any]:
+        return {"cleared": sched.hold.clear(BY_OPERATOR)}
 
     return r

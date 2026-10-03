@@ -84,11 +84,44 @@ models:
     kind: video
     runner: comfy
     template: wan5b
+    inputs: {image: optional}
     vram_mib: 23000
     caps: [t2v]
+    image_caps: [i2v]          # i2v only when the job carries an image
     quality: 70
     status: ready
     aliases: [wan5b]
+  wan2.2-14b-i2v:
+    comfy_template: video_wan2_2_14B_i2v
+    kind: video
+    runner: comfy
+    template: wan14b
+    params: {mode: i2v}
+    inputs: {image: required}
+    vram_mib: 23000
+    caps: [i2v]
+    quality: 85
+    status: ready
+    aliases: [wan-i2v]
+  minimax-h3-i2v:
+    kind: video
+    runner: comfy
+    template: minimax
+    inputs: {image: required, end_image: optional}
+    vram_mib: 23500
+    caps: [i2v, audio]
+    quality: 88
+    status: ready
+  qwen-image-edit:
+    kind: image
+    runner: comfy
+    template: qwen_edit
+    params: {unet: qwen_image_2.1_fp8.safetensors}
+    inputs: {image: required}
+    vram_mib: 22000
+    caps: [edit]
+    quality: 85
+    status: ready
   ltx-video:
     kind: video
     runner: comfy
@@ -98,6 +131,24 @@ models:
     status: needs_integration
     source: {hf: Lightricks/LTX-Video, slug: ltx-video, include: ["ltxv-2b-0.9.8-distilled.safetensors"]}
 
+  sharp:
+    kind: 3d
+    runner: exec
+    exec: {recipe: sharp, timeout_s: 660}
+    inputs: {image: required}
+    caps: [image_to_splat]
+    vram_mib: 12000
+    quality: 80
+    status: ready
+  splat-views:
+    kind: 3d
+    runner: exec
+    exec: {recipe: views, timeout_s: 1200, params: [frame_stride, quality], choices: {quality: [low, high]}}
+    inputs: {frames: {need: one_of, min: 2, max: 8}, video: one_of}
+    caps: [images_to_splat, video_to_splat]
+    vram_mib: 12000
+    quality: 85
+    status: ready
   anysplat:
     kind: 3d
     runner: external

@@ -30,10 +30,18 @@ jobs:
         run: .venv/bin/pytest -q tests
       - name: JS syntax
         run: for f in gpu_broker/web/static/*.js; do node --check "$f"; done
-      - name: Package builds with its dashboard assets
+      - name: Package builds with its dashboard assets and demo catalog
         run: |
           uv build --wheel --out-dir dist
-          test "$(python3 -m zipfile -l dist/*.whl | grep -cE 'gpu_broker/web/static/(dash\.html|dash\.js|live\.js|index\.js) ')" = 4
+          test "$(python3 -m zipfile -l dist/*.whl | grep -cE 'gpu_broker/web/static/(dash\.html|dash\.js|live\.js|index\.js|imagejob\.js) ')" = 5
+          python3 -m zipfile -l dist/*.whl | grep -q 'gpu_broker/demo/catalog.yaml '   # `gpu-broker demo` needs it
+      - name: Installed wheel imports every module and runs the demo's entry point
+        run: |
+          uv venv --python ${{ matrix.python }} "$RUNNER_TEMP/wheel"
+          uv pip install --python "$RUNNER_TEMP/wheel/bin/python" dist/*.whl
+          cd "$RUNNER_TEMP"   # not the checkout: import the installed package, not the source tree
+          wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__')]"
+          wheel/bin/gpu-broker demo --help
 
   docker:
     runs-on: ubuntu-latest
