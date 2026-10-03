@@ -37,7 +37,9 @@ HEADER = """\
 @dataclass(frozen=True)
 class Layout:
     """Where everything lives: /etc + /var/lib when installed as a system service, else the
-    user's own config and data folders."""
+    user's own config and data folders. A system service's catalog is in its data folder: the
+    broker rewrites the catalog, so the folder it is in must be the service account's, and the
+    config folder (with broker.env, which systemd reads as root) must stay root's."""
     config_dir: str
     data_dir: str
     log_dir: str
@@ -48,8 +50,12 @@ class Layout:
         return f"{self.config_dir}/{starter.CONFIG}"
 
     @property
+    def catalog_dir(self) -> str:
+        return self.data_dir if self.system else self.config_dir
+
+    @property
     def catalog(self) -> str:
-        return f"{self.config_dir}/{starter.CATALOG}"
+        return f"{self.catalog_dir}/{starter.CATALOG}"
 
     @property
     def env_file(self) -> str:
@@ -129,12 +135,14 @@ def catalog(f: Findings) -> dict[str, object] | None:
     }
 
 
-def config(f: Findings, lay: Layout) -> dict[str, object]:
+def config(f: Findings, lay: Layout, sudo: bool = False) -> dict[str, object]:
+    """`sudo`: the broker runs as an account that starts and stops system units through sudo
+    (the rule setup writes)."""
     comfy = next((s for s in f.servers if s.kind is COMFYUI), None)
     kind = driver_kind(f)
     drv: dict[str, object] = {"kind": kind, "models_root": f"{lay.data_dir}/models"}
     if kind == "systemd":
-        drv.update(sudo=False, user=user_units(f))
+        drv.update(sudo=sudo, user=user_units(f))
     groups = {runs_on(s): {"label": s.kind.label, "color": COLORS[s.kind]} for s in f.servers}
     llms = llm_servers(f)
     return {

@@ -10,6 +10,8 @@ import contextlib
 import http.client
 import json
 import os
+import pathlib
+import re
 import socket
 import subprocess
 import urllib.request
@@ -73,6 +75,8 @@ class FoundServer:
     unit: str | None = None        # the systemd unit or container that runs it, when one matches
     user_unit: bool = False        # the unit is a `systemctl --user` one
     container: str | None = None
+    rivals: tuple[str, ...] = ()   # other units that fit as well as `unit`: setup says it picked one
+    unit_inactive: bool = False    # `unit` is not running, though something answers on the port
 
 
 @dataclass(frozen=True)
@@ -113,6 +117,7 @@ class Probes:
     get: Get
     run: Run
     containers: Callable[[], list[Container] | None]   # None: no readable Docker socket
+    serves: Callable[[Unit, int], bool | None] = lambda unit, port: None   # None: cannot tell
 
 
 def kind_of(text: str) -> Kind | None:
@@ -165,12 +170,26 @@ def units(run: Run) -> list[Unit]:
     return found
 
 
-def _match(server: FoundServer, us: list[Unit], cs: list[Container]) -> FoundServer:
-    """Give a server the unit (preferred) or container that looks like it runs it."""
-    kind = server.kind
-    unit = next((u for u in us if kind_of(u.name) is kind), None)
-    if unit:
-        return FoundServer(kind, server.url, server.models, unit.name, unit.user)
+def active(run: Run, unit: Unit) -> bool:
+    out = run(["systemctl", *(["--user"] if unit.user else []), "is-active", "--", unit.name])
+    return (out or "").strip() == "active"
+
+
+def _match(server: FoundServer, us: list[Unit], cs: list[Container], p: Probes) -> FoundServer:
+    """Give a server the unit (preferred) or container that looks like it runs it. Among units of
+    its kind, one shown to hold the server's port wins, then one that is running; a unit shown
+    not to hold it is never picked. A tie is kept in `rivals`, for setup to report."""
+    kind, port = server.kind, int(server.url.rsplit(":", 1)[1])
+    ranked = []
+    for u in (u for u in us if kind_of(u.name) is kind):
+        serves = p.serves(u, port)
+        if serves is not False:
+            ranked.append(((serves is True, active(p.run, u)), u))
+    if ranked:
+        best = max(rank for rank, _ in ranked)
+        top = sorted((u for rank, u in ranked if rank == best), key=lambda u: (u.user, u.name))
+        return FoundServer(kind, server.url, server.models, top[0].name, top[0].user,
+                           rivals=tuple(u.name for u in top[1:]), unit_inactive=not best[1])
     box = next((c for c in cs if kind_of(c.name) is kind or kind_of(c.image) is kind), None)
     return FoundServer(kind, server.url, server.models, container=box.name if box else None)
 
@@ -189,7 +208,7 @@ def find(p: Probes) -> Findings:
             continue
         if (s := _server(p.get, kind)) is not None:
             seen.add(kind.port)
-            servers.append(_match(s, us, boxes))
+            servers.append(_match(s, us, boxes, p))
     ckpts = p.get(f"{LOCAL}:{COMFYUI.port}/models/checkpoints") if any(s.kind is COMFYUI for s in servers) else None
     return Findings(gpu, gpu_error, servers, us, boxes,
                     [c for c in ckpts if isinstance(c, str)] if isinstance(ckpts, list) else [])
@@ -252,5 +271,46 @@ def local_gpu(run: Callable[..., subprocess.CompletedProcess[str]] = drivers.run
     return FoundGpu(vendor, probe.name, total, f"{name or vendor.upper()}, {round(total / GIB)} GB")
 
 
+LISTEN = "0A"                        # TCP_LISTEN in /proc/net/tcp
+SOCKET_LINK = re.compile(r"^socket:\[(\d+)\]$")
+
+
+def _listening_inodes(port: int, proc: str = "/proc") -> set[str]:
+    inodes = set()
+    for table in ("tcp", "tcp6"):
+        try:
+            rows = pathlib.Path(proc, "net", table).read_text().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            f = row.split()
+            if len(f) > 9 and f[3] == LISTEN and int(f[1].rsplit(":", 1)[1], 16) == port:   # noqa: PLR2004 — /proc/net/tcp columns
+                inodes.add(f[9])
+    return inodes
+
+
+def unit_serves(unit: Unit, port: int, run: Run = run_cmd, proc: str = "/proc",
+                cgroup_root: str = "/sys/fs/cgroup") -> bool | None:
+    """Whether a process of `unit` holds the listening socket on `port`: True or False when every
+    process in the unit's cgroup could be looked at, else whether its command line names the
+    port (True), or None when nothing says either way."""
+    base = ["systemctl", *(["--user"] if unit.user else []), "show", "--value"]
+    cg = (run([*base, "-p", "ControlGroup", "--", unit.name]) or "").strip()
+    listening = _listening_inodes(port, proc)
+    try:
+        pids = pathlib.Path(cgroup_root + cg, "cgroup.procs").read_text().split() if cg else []
+    except OSError:
+        pids = []
+    if pids and listening:
+        try:
+            held = {m.group(1) for pid in pids for fd in pathlib.Path(proc, pid, "fd").iterdir()
+                    if (m := SOCKET_LINK.match(os.readlink(fd)))}
+            return bool(held & listening)
+        except OSError:
+            pass                            # another user's process: fall back to the command line
+    cmd = run([*base, "-p", "ExecStart", "--", unit.name]) or ""
+    return True if re.search(rf"(?<![0-9]){port}(?![0-9])", cmd) else None
+
+
 def real() -> Probes:
-    return Probes(local_gpu, http_get, run_cmd, docker_containers)
+    return Probes(local_gpu, http_get, run_cmd, docker_containers, unit_serves)
