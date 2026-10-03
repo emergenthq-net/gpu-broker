@@ -14,6 +14,14 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ### Changed
 - README: leads with the one-person case; installs from PyPI; reference material moved to `docs/`.
+- Internal: modules that mixed two responsibilities are split, with no behaviour change.
+  - `catalogschema` (entry types and validation) out of `catalog`.
+  - `settingsschema` (the dataclasses) out of `settings`.
+  - `admission` (job submit) out of `broker`.
+  - `drivers.systemd` and `drivers.docker` out of `drivers.local`.
+  - `demo.assemble` out of `demo.run`.
+  - The old modules re-export the moved names, except the two concrete drivers: import
+    `SystemdDriver` and `DockerDriver` from `gpu_broker.drivers.systemd` and `gpu_broker.drivers.docker`.
 
 ## [0.3.2] - 2026-10-03
 

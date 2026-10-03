@@ -90,7 +90,7 @@ def test_a_stream_that_drops_on_its_own_is_still_an_error():
 
 
 def test_local_stream_ends_on_close(tmp_path):
-    from gpu_broker.drivers.local import SystemdDriver
+    from gpu_broker.drivers.systemd import SystemdDriver
     d = SystemdDriver(allowed=None, timeouts=settings.Timeouts(), sample_s=0, models_root=str(tmp_path),
                       run=lambda *a, **k: None, sleep=lambda _: None)
     d.sample_line = lambda: "x"

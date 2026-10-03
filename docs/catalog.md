@@ -145,6 +145,6 @@ An entry may retune a template's request defaults with `defaults:`.
 
 The config file sits beside the catalog. It is [`examples/config.yaml`](../examples/config.yaml).
 
-- Every key and its default: [`gpu_broker/settings.py`](../gpu_broker/settings.py) and
+- Every key and its default: [`gpu_broker/settingsschema.py`](../gpu_broker/settingsschema.py) and
   [`gpu_broker/tuning.py`](../gpu_broker/tuning.py).
 - Secrets never go in it: `BROKER_TOKEN` and `UPSTREAM_TOKEN_*` come from the environment.
