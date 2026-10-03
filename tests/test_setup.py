@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import pathlib
+import shutil
 import signal
 import stat
 import subprocess
@@ -234,7 +235,7 @@ def test_through_sudo_a_write_is_a_new_root_file_moved_into_place():
     host.Host(dry=False, sudo=True, run=run).write("/etc/gb/broker.env", "X=1\n", host.PRIVATE, owner="svc")
     tmp = "/etc/gb/.broker.env.Ab12Cd34"
     assert cmds[2:] == [["sudo", "-n", "mktemp", "--", "/etc/gb/.broker.env.XXXXXXXX"], ["sudo", "-n", "tee", "--", tmp],
-                        ["sudo", "-n", "chmod", "600", "--", tmp], ["sudo", "-n", "chown", "--", "svc:", tmp],
+                        ["sudo", "-n", "chmod", "600", "--", tmp], ["sudo", "-n", "chown", "-h", "--", "svc:", tmp],
                         ["sudo", "-n", "mv", "-fT", "--", tmp, "/etc/gb/broker.env"]]
 
 
@@ -439,7 +440,7 @@ class Fake:
                          system_dirs=(str(tmp_path / "etc"), str(tmp_path / "lib"), str(tmp_path / "log")),
                          unit_path=str(tmp_path / "gpu-broker.service"), sudoers_path=str(tmp_path / "sudoers-gb"),
                          account=account, group_exists=lambda g: g in ("video", "render", "docker"),
-                         lstat=as_root(venv) if root_owned else os.lstat)
+                         lstat=as_root(venv) if root_owned else os.lstat, root_uid=os.getuid())
         self.out: list[str] = []
 
     def __call__(self, **opts):
@@ -567,9 +568,10 @@ def test_with_passwordless_sudo_every_change_goes_through_sudo(tmp_path, monkeyp
     root_cmds = [c for c in fake.cmds if c[:2] != ["sudo", "-n"]]
     assert root_cmds == []                                            # every change was made through sudo
     catalog = f"{tmp_path}/lib/catalog.yaml"
-    assert ["sudo", "-n", "chown", "--", f"{me().name}:", f"{tmp_path}/lib/.catalog.yaml.Ab12Cd34"] in fake.cmds
-    assert ["sudo", "-n", "mv", "-fT", "--", f"{tmp_path}/lib/.catalog.yaml.Ab12Cd34", catalog] in fake.cmds
-    assert ["sudo", "-n", "chown", "--", f"{me().name}:", f"{tmp_path}/lib/inputs"] in fake.cmds
+    acct = ["sudo", "-n", "-u", me().name]       # tmp_path is the account's: what goes inside it is made as the account
+    assert [*acct, "mv", "-fT", "--", f"{tmp_path}/lib/.catalog.yaml.Ab12Cd34", catalog] in fake.cmds
+    assert [*acct, "mkdir", "-p", "-m", "755", "--", f"{tmp_path}/lib/inputs"] in fake.cmds
+    assert not any(c[:2] == ["sudo", "-n"] and "chown" in c and "-h" not in c for c in fake.cmds)
     assert not any("/etc/" in c[-1] for c in fake.cmds if "chown" in c)
 
 
@@ -742,3 +744,121 @@ def test_nothing_found_writes_the_starter_catalog(tmp_path, monkeypatch, check_o
     assert fake(yes=True) == 0
     cat = yaml.safe_load((tmp_path / "cfg" / "gpu-broker" / "catalog.yaml").read_text())
     assert "llama-3.1-8b" in cat["models"] and "writing the starter catalog" in fake.text()
+
+
+# Root must never act through a symlink the service account could plant.
+
+@pytest.fixture
+def chowns(monkeypatch):
+    """Every chown, by name or by descriptor (to the account: whoever runs the tests)."""
+    seen = []
+    monkeypatch.setattr(host, "_ids", lambda owner: (os.getuid(), os.getgid()))
+    for name in ("chown", "lchown", "fchown"):
+        real = getattr(os, name)
+        monkeypatch.setattr(os, name, lambda target, *a, _r=real, _n=name, **kw: (seen.append((_n, target)), _r(target, *a, **kw))[1])
+    return seen
+
+
+def test_as_root_a_data_folder_swapped_for_a_symlink_is_refused_and_nothing_is_chowned(tmp_path, monkeypatch, check_ok, chowns):
+    fake = Fake(tmp_path, monkeypatch, euid=0, systemd=True)
+    assert fake() == 0
+    outside = tmp_path / "outside"                 # stands in for /etc
+    outside.mkdir()
+    shutil.rmtree(tmp_path / "lib" / "inputs")
+    (tmp_path / "lib" / "inputs").symlink_to(outside)
+    chowns.clear()
+    assert fake() == 1
+    assert "inputs is a symlink" in fake.text() and chowns == []
+
+
+def test_as_root_a_symlink_anywhere_on_the_way_is_not_followed(tmp_path, chowns):
+    (tmp_path / "real").mkdir()
+    (tmp_path / "lib").symlink_to(tmp_path / "real")
+    h = host.Host(dry=False, sudo=False, strict=True)
+    with pytest.raises(host.UnsafePath, match="lib is a symlink"):
+        h.mkdir(str(tmp_path / "lib" / "inputs"), "svc")
+    with pytest.raises(host.UnsafePath, match="lib is a symlink"):
+        h.write(tmp_path / "lib" / "catalog.yaml", "x\n", host.PUBLIC, "svc")
+    assert list((tmp_path / "real").iterdir()) == [] and chowns == []
+
+
+def test_as_root_owners_are_set_on_the_open_folder_never_on_its_name(tmp_path, chowns):
+    host.Host(dry=False, sudo=False, strict=True).mkdir(str(tmp_path / "lib" / "inputs"), "svc")
+    assert (tmp_path / "lib" / "inputs").is_dir() and [n for n, _ in chowns] in ([], ["fchown"])
+
+
+def test_the_folders_only_root_can_change_are_followed_and_the_rest_is_not(tmp_path):
+    base, rest = host.anchor(str(tmp_path / "a" / "b"))            # tmp_path is yours, not root's
+    assert pathlib.Path(base, *rest) == tmp_path / "a" / "b" and rest[-3:] == (tmp_path.name, "a", "b")
+    assert host.anchor("/") == ("/", ())
+
+
+def sudo_disk(cmds):
+    """`sudo -n test` answered from the disk; everything else recorded and succeeding."""
+    def run(argv, **kw):
+        if argv[:3] == ["sudo", "-n", "test"]:
+            ok = {"-e": os.path.exists, "-L": os.path.islink, "-d": os.path.isdir}[argv[3]](argv[-1])
+            return subprocess.CompletedProcess(argv, 0 if ok else 1, "", "")
+        cmds.append(argv)
+        return subprocess.CompletedProcess(argv, 0, argv[-1].replace("XXXXXXXX", "Ab12Cd34") if "mktemp" in argv else "", "")
+    return run
+
+
+def test_through_sudo_a_symlinked_data_folder_is_refused(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "_ids", lambda owner: (os.getuid(), os.getgid()))
+    (tmp_path / "inputs").symlink_to(tmp_path / "elsewhere")
+    cmds = []
+    with pytest.raises(host.UnsafePath):
+        host.Host(dry=False, sudo=True, run=sudo_disk(cmds), strict=True).mkdir(str(tmp_path / "inputs"), "svc")
+    assert cmds == []
+
+
+def test_through_sudo_root_never_acts_inside_a_folder_the_account_owns(tmp_path, monkeypatch):
+    monkeypatch.setattr(host, "_ids", lambda owner: (os.getuid(), os.getgid()))   # the account owns tmp_path
+    cmds = []
+    h = host.Host(dry=False, sudo=True, run=sudo_disk(cmds), strict=True)
+    h.mkdir(str(tmp_path / "inputs"), "svc")
+    h.write(tmp_path / "catalog.yaml", "x\n", host.PUBLIC, "svc")
+    assert cmds and all(c[:4] == ["sudo", "-n", "-u", "svc"] for c in cmds)
+    assert not any(c[4] in ("chown", "chmod") and c[-1].endswith("catalog.yaml") for c in cmds)
+
+
+def test_a_config_folder_others_can_change_is_refused(tmp_path, monkeypatch, check_ok):
+    fake = Fake(tmp_path, monkeypatch, euid=0, systemd=True)
+    (tmp_path / "etc").mkdir()
+    (tmp_path / "etc").chmod(0o777)
+    assert fake() == 1
+    assert "writable by its group or others" in fake.text() and list((tmp_path / "etc").iterdir()) == []
+    fake.m.root_uid = os.getuid() + 1                # not root's
+    (tmp_path / "etc").chmod(0o755)
+    assert fake() == 1 and "is not owned by root" in fake.text()
+
+
+def test_joining_the_docker_group_is_said_out_loud(tmp_path, monkeypatch, check_ok):
+    found = probes({"http://127.0.0.1:11434/api/tags": OLLAMA_TAGS}, containers=[Container("llm", "ollama/ollama")])
+    fake = Fake(tmp_path, monkeypatch, euid=0, systemd=True, found=found)
+    assert fake() == 0
+    assert "docker group" in fake.text() and "equivalent to root" in fake.text()
+
+
+def test_through_sudo_root_makes_folders_elsewhere_and_chowns_the_name_not_a_link(tmp_path, monkeypatch):
+    def no_such_user(owner):
+        raise KeyError(owner)
+    monkeypatch.setattr(host, "_ids", no_such_user)          # nobody controls tmp_path: root does the work
+    cmds = []
+    host.Host(dry=False, sudo=True, run=sudo_disk(cmds), strict=True).mkdir(str(tmp_path / "lib"), "svc")
+    assert cmds == [["sudo", "-n", "install", "-d", "-m", "755", "--", f"{tmp_path}/lib"],
+                    ["sudo", "-n", "chown", "-h", "--", "svc:", f"{tmp_path}/lib"]]
+
+
+def test_through_sudo_a_symlink_only_root_can_see_is_refused(tmp_path):
+    cmds = []
+    disk = sudo_disk(cmds)
+
+    def run(argv, **kw):                     # behind a folder you cannot read, only `sudo test -L` sees the link
+        if argv[:4] == ["sudo", "-n", "test", "-L"] and argv[-1].endswith("/hidden/inputs"):
+            return subprocess.CompletedProcess(argv, 0, "", "")
+        return disk(argv, **kw)
+    with pytest.raises(host.UnsafePath):
+        host.Host(dry=False, sudo=True, run=run, strict=True).mkdir(str(tmp_path / "hidden" / "inputs"), "svc")
+    assert cmds == []

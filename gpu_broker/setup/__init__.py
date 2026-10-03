@@ -151,6 +151,7 @@ class Machine:
     group_exists: Callable[[str], bool] = service.group_exists
     private_group: Callable[[int, int], bool] = service.private_group
     lstat: Callable[[str], os.stat_result] = os.lstat
+    root_uid: int = 0               # who must own the config folder when setup has root
     walk: Callable[[str], Iterable[str]] = service.walk
 
 
@@ -393,6 +394,9 @@ def install_service(m: Machine, h: host.Host, p: Plan, lay: Layout, exe: list[st
     ctl = ["systemctl"] if as_root else ["systemctl", "--user"]
     if as_root:
         groups = service.supplementary(m.group_exists, cfg.driver.kind == "docker")
+        if service.DOCKER_GROUP in groups:
+            say(f"warning  {acct.name} joins the {service.DOCKER_GROUP} group to start and stop containers, and "
+                f"that group is equivalent to root on this machine: anyone who controls {acct.name} controls the host")
         unit, path = service.system_unit(exe, lay.config, lay.env_file, acct.name, groups), m.unit_path
     else:
         unit = service.user_unit(exe, lay.config, lay.env_file)
@@ -435,7 +439,8 @@ def main(opts: Options, env: Mapping[str, str] | None = None, m: Machine | None 
         say(f"problem  {p}")
         return EXIT_PROBLEMS
     lay = layout(opts, env, m.system_dirs if p.mode == SYSTEM or m.euid == 0 else None)
-    h = host.Host(opts.dry_run, p.sudo, m.run, say)
+    strict = p.mode == SYSTEM or m.euid == 0
+    h = host.Host(opts.dry_run, p.sudo, m.run, say, strict)
     say(f"layout   {lay.config_dir} (config), {lay.data_dir} (data)"
         + ("" if p.mode != FOREGROUND else "; no root, passwordless sudo or systemd: not installing a service"))
     if p.mode == FOREGROUND and m.euid != 0 and any(s.unit and not s.user_unit for s in found.servers):
@@ -458,6 +463,10 @@ def main(opts: Options, env: Mapping[str, str] | None = None, m: Machine | None 
     cat = generate.catalog(found)
     cat_text = generate.text("catalog", cat, lay) if cat else starter.starter(starter.CATALOG)
     validated(cfg_text, cat_text)
+    if strict and (why := h.check_root_dir(lay.config_dir, m.root_uid)):
+        say(f"problem  {why}: the token and the service's config live there, so only root may change it. "
+            f"Fix it (e.g. `sudo chown root: {lay.config_dir} && sudo chmod go-w {lay.config_dir}`) and run setup again")
+        return EXIT_PROBLEMS
     try:
         changed = write_files(h, lay, cfg_text, cat_text, owner, say)
         token, new = host.token(h, lay.env_file)

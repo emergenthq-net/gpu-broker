@@ -8,14 +8,25 @@ comes back as a failed result, so callers report it like any other failure.
 Files are written to a new temporary file in the same folder (created 0600, never following a
 symlink) and renamed into place, so a reader never sees half a file and a planted symlink is
 never written through: setup refuses to replace a symlink at all.
+
+When setup has root (`strict`), the service account owns some of the folders it touches (the
+data folder and what is inside it), and could swap anything there for a symlink at any moment.
+So nothing root does may follow a link the account could have planted:
+- as root, a path is opened one folder at a time with O_NOFOLLOW from the deepest folder only
+  root can change, and owners and modes are set on the open descriptor, never on a name;
+- through sudo, where a descriptor cannot be held across commands, folders and files inside a
+  folder the account controls are made *as the account* (`sudo -u`), so root never acts there,
+  and root's own `chown` never follows a link (`-h`).
 """
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import pathlib
 import secrets
 import shutil
+import stat
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -30,6 +41,10 @@ CMD_TIMEOUT_S = 60              # systemctl, useradd, loginctl
 INSTALL_TIMEOUT_S = 300         # `uv tool install` downloads the package and its dependencies
 NO_RESULT = -1                  # the returncode of a command that could not run at all
 PRIVATE, PUBLIC = 0o600, 0o644
+DIR_MODE = 0o755
+GROUP_OTHER_WRITE = 0o022
+DIR_FLAGS = os.O_RDONLY | os.O_DIRECTORY | os.O_CLOEXEC
+NO_LINK = (errno.ELOOP, errno.ENOTDIR)   # what O_NOFOLLOW (with O_DIRECTORY) gives for a symlink
 
 Run = Callable[..., subprocess.CompletedProcess[str]]
 
@@ -96,6 +111,7 @@ class Host:
     sudo: bool                      # write and run through `sudo -n` (system layout, not root)
     run: Run = run_cmd
     say: Callable[[str], None] = print
+    strict: bool = False            # setup has root: never follow a symlink the service account could plant
     did: list[str] = field(default_factory=list)   # what was (or would be) done, for tests
 
     def _note(self, line: str) -> None:
@@ -148,7 +164,9 @@ class Host:
 
     def mkdir(self, path: str, owner: str | None = None) -> None:
         """Create a folder (and its parents); `owner` (a user, with their login group) gets it,
-        new or not."""
+        new or not. A symlink in its place is refused."""
+        if os.path.islink(path):
+            raise UnsafePath(f"{path} is a symlink; setup does not create or change a folder through it")
         exists = os.path.isdir(path)
         if exists and (owner is None or _owned_by(path, owner)):
             return
@@ -157,13 +175,28 @@ class Host:
         if self.dry:
             return
         if self.sudo:
-            self._check(ran(self.run, ["sudo", "-n", "install", "-d", "-m", "755", "--", path]), path)
+            self._mkdir_sudo(path, owner)
+        elif self.strict:
+            fd, _ = open_dir(path, create=True)
+            try:
+                if owner and (os.fstat(fd).st_uid, os.fstat(fd).st_gid) != _ids(owner):
+                    os.fchown(fd, *_ids(owner))
+            finally:
+                os.close(fd)
+        else:
+            os.makedirs(path, exist_ok=True)
             if owner:
-                self._check(ran(self.run, ["sudo", "-n", "chown", "--", f"{owner}:", path]), path)
+                os.chown(path, *_ids(owner))
+
+    def _mkdir_sudo(self, path: str, owner: str | None) -> None:
+        if self._test("-L", path):
+            raise UnsafePath(f"{path} is a symlink; setup does not create or change a folder through it")
+        if owner and controls(path, owner):
+            self._check(ran(self.run, ["sudo", "-n", "-u", owner, "mkdir", "-p", "-m", f"{DIR_MODE:o}", "--", path]), path)
             return
-        os.makedirs(path, exist_ok=True)
+        self._check(ran(self.run, ["sudo", "-n", "install", "-d", "-m", f"{DIR_MODE:o}", "--", path]), path)
         if owner:
-            os.chown(path, *_ids(owner))
+            self._check(ran(self.run, ["sudo", "-n", "chown", "-h", "--", f"{owner}:", path]), path)
 
     def write(self, path: str | pathlib.Path, text: str, mode: int = PUBLIC, owner: str | None = None) -> None:
         path = str(path)
@@ -173,11 +206,23 @@ class Host:
         if self.sudo:
             self._write_sudo(path, text, mode, owner)
             return
-        if os.path.islink(path) or os.path.isdir(path):
-            raise UnsafePath(f"{path} is a symlink or a folder; setup does not write through it")
         d, base = os.path.split(path)
-        tmp = os.path.join(d, f".{base}.{secrets.token_hex(6)}.tmp")
-        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, PRIVATE)
+        dfd = open_dir(d)[0] if self.strict else os.open(d, DIR_FLAGS)
+        try:
+            self._write_at(dfd, base, path, text, mode, owner)
+        finally:
+            os.close(dfd)
+
+    @staticmethod
+    def _write_at(dfd: int, base: str, path: str, text: str, mode: int, owner: str | None) -> None:
+        """Write `base` in the open folder `dfd`: every step names the folder's descriptor, so a
+        symlink planted on the way to it cannot redirect the write."""
+        with contextlib.suppress(FileNotFoundError):
+            st = os.stat(base, dir_fd=dfd, follow_symlinks=False)
+            if stat.S_ISLNK(st.st_mode) or stat.S_ISDIR(st.st_mode):
+                raise UnsafePath(f"{path} is a symlink or a folder; setup does not write through it")
+        tmp = f".{base}.{secrets.token_hex(6)}.tmp"
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, PRIVATE, dir_fd=dfd)
         try:
             with os.fdopen(fd, "w") as f:
                 f.write(text)
@@ -187,25 +232,46 @@ class Host:
                     uid, gid = _ids(owner)
                     os.fchown(f.fileno(), uid, gid)
                 os.fsync(f.fileno())
-            os.replace(tmp, path)
+            os.replace(tmp, base, src_dir_fd=dfd, dst_dir_fd=dfd)
         except BaseException:
             with contextlib.suppress(FileNotFoundError):
-                os.unlink(tmp)
+                os.unlink(tmp, dir_fd=dfd)
             raise
 
     def _write_sudo(self, path: str, text: str, mode: int, owner: str | None) -> None:
+        """mktemp, tee, chmod, (chown,) mv: separate commands on one name. In a folder the
+        account controls, all of them run as the account, so swapping the temporary file for a
+        link between two steps gains it nothing; elsewhere only root can touch the name."""
         if self._test("-L", path) or self._test("-d", path):
             raise UnsafePath(f"{path} is a symlink or a folder; setup does not write through it")
-        r = ran(self.run, ["sudo", "-n", "mktemp", "--", f"{os.path.dirname(path)}/.{os.path.basename(path)}.XXXXXXXX"])
+        as_owner = bool(owner) and controls(path, owner or "")
+        who = ["sudo", "-n", "-u", owner or ""] if as_owner else ["sudo", "-n"]
+        r = ran(self.run, [*who, "mktemp", "--", f"{os.path.dirname(path)}/.{os.path.basename(path)}.XXXXXXXX"])
         self._check(r, path)
         tmp = r.stdout.strip()
-        steps = [(["tee", "--", tmp], text), (["chmod", f"{mode:o}", "--", tmp], None),
-                 *([(["chown", "--", f"{owner}:", tmp], None)] if owner else []), (["mv", "-fT", "--", tmp, path], None)]
+        chown = [(["chown", "-h", "--", f"{owner}:", tmp], None)] if owner and not as_owner else []
+        steps = [(["tee", "--", tmp], text), (["chmod", f"{mode:o}", "--", tmp], None), *chown,
+                 (["mv", "-fT", "--", tmp, path], None)]
         for argv, stdin in steps:
-            r = ran(self.run, ["sudo", "-n", *argv], **({"input": stdin} if stdin is not None else {}))
+            r = ran(self.run, [*who, *argv], **({"input": stdin} if stdin is not None else {}))
             if r.returncode != 0:
-                ran(self.run, ["sudo", "-n", "rm", "-f", "--", tmp])
+                ran(self.run, [*who, "rm", "-f", "--", tmp])
                 self._check(r, path)
+
+    def check_root_dir(self, path: str, root_uid: int = 0) -> str | None:
+        """Why an existing folder setup writes root's files into (the config folder) is not safe:
+        a symlink, not root's, or writable by group or others. None if it is fine or absent."""
+        try:
+            st = os.lstat(path)
+        except FileNotFoundError:
+            return None
+        if stat.S_ISLNK(st.st_mode) or not stat.S_ISDIR(st.st_mode):
+            return f"{path} is a symlink or not a folder"
+        if st.st_uid != root_uid:
+            return f"{path} is not owned by root"
+        if st.st_mode & GROUP_OTHER_WRITE:
+            return f"{path} is writable by its group or others"
+        return None
 
     @staticmethod
     def _check(r: subprocess.CompletedProcess[str], what: str) -> None:
@@ -239,9 +305,85 @@ def _ids(owner: str) -> tuple[int, int]:
 
 def _owned_by(path: str, owner: str) -> bool:
     try:
-        return (os.stat(path).st_uid, os.stat(path).st_gid) == _ids(owner)
-    except (OSError, KeyError):
+        st = os.lstat(path)
+    except OSError:
         return False
+    try:
+        return (st.st_uid, st.st_gid) == _ids(owner)
+    except KeyError:
+        return False
+
+
+def controls(path: str, owner: str) -> bool:
+    """`owner` (not root) owns the nearest folder above `path` that exists, or what a symlink there
+    points at: it could swap anything below it, so root must not act on names there."""
+    d = os.path.dirname(os.path.abspath(path))
+    while not os.path.lexists(d):
+        d = os.path.dirname(d)
+    try:
+        uid = _ids(owner)[0]
+    except KeyError:
+        return False
+    if uid == 0:
+        return False
+    with contextlib.suppress(OSError):
+        return uid in (os.lstat(d).st_uid, os.stat(d).st_uid)
+    return False
+
+
+def _root_only(st: os.stat_result, root_uid: int) -> bool:
+    return st.st_uid == root_uid and not st.st_mode & GROUP_OTHER_WRITE
+
+
+def anchor(path: str, root_uid: int = 0) -> tuple[str, tuple[str, ...]]:
+    """Split an absolute path into its deepest existing folder that only root can change (every
+    folder on its real path is root's and not group/other-writable) and the names after it.
+    Following links within that prefix is safe (a root-owned /var -> /private/var, say): nobody
+    else can change it. Everything after it is opened without following a link."""
+    parts = pathlib.PurePath(os.path.abspath(path)).parts
+    base = parts[0]
+    for i, name in enumerate(parts[1:], 1):
+        nxt = os.path.realpath(os.path.join(base, name))
+        real = pathlib.PurePath(nxt).parts
+        try:
+            ok = os.path.isdir(nxt) and all(
+                _root_only(os.lstat(os.path.join(*real[:j])), root_uid) for j in range(1, len(real) + 1))
+        except OSError:
+            ok = False
+        if not ok:
+            return base, parts[i:]
+        base = nxt
+    return base, ()
+
+
+def open_dir(path: str, create: bool = False, root_uid: int = 0) -> tuple[int, bool]:
+    """A descriptor for folder `path`, reached one name at a time past `anchor` with O_NOFOLLOW
+    (missing folders made 0755 if `create`), and whether the last one was new. A symlink on the
+    way is refused."""
+    base, rest = anchor(path, root_uid)
+    fd, new = os.open(base, DIR_FLAGS), False
+    try:
+        for name in rest:
+            new = False
+            if create:
+                try:
+                    os.mkdir(name, DIR_MODE, dir_fd=fd)
+                    new = True
+                except FileExistsError:
+                    pass
+            try:
+                nfd = os.open(name, DIR_FLAGS | os.O_NOFOLLOW, dir_fd=fd)
+            except OSError as e:
+                if e.errno in NO_LINK:
+                    raise UnsafePath(f"{path}: {name} is a symlink or not a folder; setup does not "
+                                     "follow it") from e
+                raise
+            os.close(fd)
+            fd = nfd
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd, new
 
 
 UNIT_UNSAFE = "\n\r\0"
