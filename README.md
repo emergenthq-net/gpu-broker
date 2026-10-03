@@ -477,7 +477,8 @@ are still shown, and the dashboard says "per-process memory needs root or CAP_SY
 
 ## Security model
 
-The full threat model is in [SECURITY.md](SECURITY.md). In short:
+Details are in [SECURITY.md](SECURITY.md); the threat model used for security review is
+[docs/threat-model.md](docs/threat-model.md). In short:
 
 - **Token.** A bearer token is compared in constant time. With none set, every call is
   refused and `serve` won't start. Secrets come from the environment, never the config file.
