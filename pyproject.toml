@@ -39,7 +39,7 @@ dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11", "types-PyYAML",
 gpu-broker = "gpu_broker.cli:main"
 
 [tool.setuptools]
-packages = ["gpu_broker", "gpu_broker.demo", "gpu_broker.drivers", "gpu_broker.templates", "gpu_broker.web"]
+packages = ["gpu_broker", "gpu_broker.demo", "gpu_broker.drivers", "gpu_broker.gpu", "gpu_broker.templates", "gpu_broker.web"]
 
 [tool.setuptools.package-data]
 gpu_broker = ["py.typed"]

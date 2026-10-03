@@ -18,11 +18,13 @@ import threading
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Final, Literal
+from typing import TYPE_CHECKING, Final, Literal
 
-from ..settings import Gpu
 from . import AMD, AUTO, NVIDIA, GpuProbe, GpuSample, NvidiaState, Procs, amd, check_vendor, nvidia
 from .nvidia import Run
+
+if TYPE_CHECKING:   # settings imports this package: a runtime import would be circular
+    from ..settings import Gpu
 
 RETRY_PAUSE_S = 1
 NO_GPU = ("no GPU found: nvidia-smi is not installed and no amdgpu card is listed under "
