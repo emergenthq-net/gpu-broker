@@ -1,5 +1,16 @@
 # gpu-broker
 
+## TLDR: just install it
+
+```bash
+pip install gpu-broker      # or: uvx gpu-broker setup
+gpu-broker setup
+```
+
+It finds your GPU and model servers, writes the config, starts the service and opens the dashboard.
+
+---
+
 gpu-broker lets a chat model, an image generator and a video generator take turns on one
 graphics card, switching between them for you as requests arrive.
 
@@ -75,9 +86,26 @@ Or without installing: `uvx gpu-broker demo`.
 
 ```bash
 pip install gpu-broker               # add [download] to fetch models: pip install 'gpu-broker[download]'
+gpu-broker setup                     # or first see what it would do: gpu-broker setup --dry-run
 ```
 
-Then pick how your model servers run:
+`setup` asks no questions. It:
+
+- **finds the GPU** (NVIDIA or AMD) and its memory;
+- **finds your model servers**: llama.cpp, vLLM, Ollama and ComfyUI on their usual ports, and the
+  systemd units or Docker containers that run them;
+- **writes** `config.yaml` and `catalog.yaml` for what it found (the starter files if it found
+  nothing), and a new API token in `broker.env` (mode 600);
+- **installs and starts the `gpu-broker` service** when it has root or passwordless sudo.
+  Otherwise it prints the exact `serve` command, and runs it for you when you're at a terminal;
+- **runs `check`**, waits until the broker answers, and **opens the dashboard** (not over SSH).
+
+Running it again is safe: it keeps every file it finds, and the token. Details, flags and what
+each estimate means: [docs/setup.md](docs/setup.md).
+
+## Manual setup
+
+For full control, set it up by hand: pick how your model servers run.
 
 | your model servers are | route |
 |---|---|
@@ -135,9 +163,11 @@ The broker runs in its own LXC or VM. The model servers are systemd units in oth
    (see [Security](#security)).
 3. Install [`host/gpu-broker-gpu`](host/gpu-broker-gpu), its GPU reader, next to it.
 
-### Use it
+## Use it
 
 ```bash
+# after setup the token is in broker.env (/etc/gpu-broker, or ~/.config/gpu-broker without root)
+export BROKER_TOKEN=$(sudo sed -n 's/^BROKER_TOKEN=//p' /etc/gpu-broker/broker.env)
 T="Authorization: Bearer $BROKER_TOKEN"
 curl -s localhost:8095/v1/chat/completions -H "$T" -H 'Content-Type: application/json' \
   -d '{"model":"llama","messages":[{"role":"user","content":"hi"}]}'
@@ -161,6 +191,7 @@ More examples and every route: [docs/api.md](docs/api.md).
 
 | page | covers |
 |---|---|
+| [docs/setup.md](docs/setup.md) | `gpu-broker setup`: what it detects, what it writes, flags |
 | [docs/catalog.md](docs/catalog.md) | the catalog: models, substitution, input files, bundled ComfyUI templates |
 | [docs/exec-recipes.md](docs/exec-recipes.md) | command-line models (`runner: exec`): recipes, timeouts, GPU holds |
 | [docs/api.md](docs/api.md) | every route, request fields, headers |

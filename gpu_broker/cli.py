@@ -1,5 +1,5 @@
 """`gpu-broker` console script: serve the API, check a config and catalog without running anything,
-write a starter config (init), or run the demo."""
+write a starter config (init), set everything up from what is installed (setup), or run the demo."""
 from __future__ import annotations
 
 import argparse
@@ -33,6 +33,12 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     initp = sub.add_parser("init", help="write a starter config.yaml and catalog.yaml, and create the folders they name")
     initp.add_argument("--dir", default=None, help="where to write them (default: /etc/gpu-broker)")
     initp.add_argument("--force", action="store_true", help="replace existing files")
+    setupp = sub.add_parser("setup", help="find the GPU and model servers, write the config, start the service "
+                                           "and open the dashboard")
+    setupp.add_argument("--yes", action="store_true", help="never ask and never run in the foreground (for scripts)")
+    setupp.add_argument("--dry-run", action="store_true", help="print what it would do; change nothing")
+    setupp.add_argument("--dir", default=None, help="where the config, catalog and broker.env go "
+                                                    "(default: /etc/gpu-broker, or ~/.config/gpu-broker without root)")
     demo = sub.add_parser("demo", help="try it without a GPU: the dashboard and API on a simulated card")
     demo.add_argument("--host", help="bind address (default: this machine only, 127.0.0.1)")
     demo.add_argument("--port", type=int, help="port (default: a free one, 8096 if it is free)")
@@ -44,6 +50,9 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
         return run.main(a.host, a.port, a.quiet, a.browser)
     if a.cmd == "init":
         return init(a.dir, a.force)
+    if a.cmd == "setup":
+        from . import setup
+        return setup.main(setup.Options(a.yes, a.dry_run, a.dir), env)
     cfg = settings.load(a.config, env)
     if a.cmd == "check":
         return check(cfg)

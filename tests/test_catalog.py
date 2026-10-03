@@ -21,10 +21,16 @@ def test_the_fixture_and_examples_validate():
 
 
 @pytest.mark.parametrize("model", [{"runner": "shell"}, {"status": "maybe"}, {"unit": "../x"},
-                                   {"endpoint": "file:///etc/passwd"}, {"open_url": "javascript:alert(1)"}])
+                                   {"endpoint": "file:///etc/passwd"}, {"open_url": "javascript:alert(1)"},
+                                   {"health_path": "health"}, {"health_path": "//evil/health"},
+                                   {"health_path": "/h?x=1"}, {"health_path": 5}])
 def test_rejects_unsafe_entries(model):
     with pytest.raises(ValueError):
         validate(bad(**model))
+
+
+def test_accepts_a_health_path():
+    validate(bad(health_path="/api/version"))
 
 
 def test_rejects_unknown_default_resident():

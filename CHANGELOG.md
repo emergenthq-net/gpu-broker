@@ -6,6 +6,17 @@ and versions follow [Semantic Versioning](https://semver.org/).
 ## [Unreleased]
 
 ### Added
+- `gpu-broker setup`: one command from install to a running broker, asking no questions.
+  - Finds the GPU, and llama.cpp, vLLM, Ollama and ComfyUI on their usual ports, with the
+    systemd units or Docker containers that run them.
+  - Writes the config and catalog for them (the starter files if it finds nothing) and a new
+    API token in `broker.env` (mode 600). Existing files and the token are kept.
+  - Installs and starts the `gpu-broker` service with root or passwordless sudo; otherwise
+    prints the `serve` command, and runs it in the foreground at a terminal.
+  - Runs `check`, waits for `/health`, and opens the dashboard (not over SSH).
+  - `--dry-run`, `--yes`, `--dir`. See `docs/setup.md`.
+- Catalog: `health_path` for LLM servers without `/health` (Ollama: `/api/version`).
+- README: a TLDR block first.
 - `gpu-broker init`: writes a starter `config.yaml` and `catalog.yaml` to `/etc/gpu-broker`
   (or `--dir`) and creates the folders they name.
   - Existing files are kept unless `--force`.

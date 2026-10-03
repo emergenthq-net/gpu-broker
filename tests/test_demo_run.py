@@ -16,7 +16,7 @@ from urllib.parse import urlsplit
 import pytest
 from fastapi.testclient import TestClient
 
-from gpu_broker import cli, metrics
+from gpu_broker import browser, cli, metrics
 from gpu_broker.constants import RESIDENCY_EVENT_PREFIX, Event
 from gpu_broker.demo import content, driver, run
 from gpu_broker.demo.tuning import SimTimings, Step, Traffic
@@ -195,7 +195,7 @@ def started(monkeypatch):
     monkeypatch.setattr(run, "serve", lambda app, sock, graceful_s: seen["served"].append(sock.getsockname()[1]))
     monkeypatch.setattr(webbrowser, "open", seen["opened"].append)
     monkeypatch.setattr(signal, "signal", lambda *a: None)
-    for k in run.SSH_ENV:
+    for k in browser.SSH_ENV:
         monkeypatch.delenv(k, raising=False)
     monkeypatch.setenv("DISPLAY", ":0")
     return seen
@@ -223,13 +223,13 @@ def test_no_browser_or_no_screen_only_prints_the_link(started, monkeypatch, caps
     ({"DISPLAY": ":0", "SSH_CONNECTION": "a"}, "linux", False),
 ])
 def test_a_browser_is_opened_only_on_a_local_screen(env, platform, ok):
-    assert run.can_open_browser(env, platform) is ok
+    assert browser.can_open_browser(env, platform) is ok
 
 
 def test_a_broken_browser_does_not_stop_the_demo():
     def boom(url):
         raise webbrowser.Error("no browser")
-    run.open_browser("http://x", {}, "darwin", boom)
+    browser.open_browser("http://x", {}, "darwin", boom)
 
 
 def test_a_taken_port_fails_before_anything_is_printed_opened_or_started(started, monkeypatch, capsys):

@@ -4,7 +4,8 @@ The catalog lists what may be requested and how each model runs. It is trusted c
 the only place backend URLs come from.
 
 - Annotated example: [`examples/catalog.yaml`](../examples/catalog.yaml)
-- `gpu-broker init` writes it to `/etc/gpu-broker/catalog.yaml`.
+- `gpu-broker setup` writes one for the model servers it finds ([setup.md](setup.md)).
+- `gpu-broker init` writes the starter one to `/etc/gpu-broker/catalog.yaml`.
 - `gpu-broker check` validates it.
 
 ## A minimal catalog
@@ -56,6 +57,9 @@ models:
 | `llm_unit` | an OpenAI-compatible server (llama.cpp, vLLM, ...) | the driver starts and stops its `unit` |
 | `comfy` | a graph on the shared ComfyUI, built by a `template` | ComfyUI is shared; the broker frees its weights |
 | `exec` | a command-line program | a host recipe: see [exec-recipes.md](exec-recipes.md) |
+
+An `llm_unit` server is ready when `endpoint` + `/health` answers 200. A server without
+`/health` names its own path: `health_path: /api/version` for Ollama.
 
 ## Substitution
 

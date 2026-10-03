@@ -33,24 +33,33 @@ def data_dirs(cfg: settings.Settings) -> list[str]:
     return dirs
 
 
+def write_text(path: pathlib.Path, text: str) -> None:
+    path.write_text(text)
+
+
 def run(dest: str = DEFAULT_DIR, force: bool = False,
-        mkdir: Callable[[str], None] = lambda d: os.makedirs(d, exist_ok=True)) -> list[str]:
+        mkdir: Callable[[str], None] = lambda d: os.makedirs(d, exist_ok=True),
+        config: str | None = None, catalog: str | None = None,
+        write: Callable[[pathlib.Path, str], None] = write_text, keep_hint: str = "--force replaces it") -> list[str]:
     """Write config.yaml and catalog.yaml into `dest` and create the folders the config names.
-    Returns one line per action, for the CLI to print."""
+    `config` and `catalog` replace the starter files (`gpu-broker setup` passes what it
+    generated); `mkdir` and `write` let setup make them through sudo. Returns one line per
+    action, for the CLI to print."""
     out = pathlib.Path(dest)
     mkdir(str(out))
-    config = starter(CONFIG)
-    if out.resolve() != pathlib.Path(DEFAULT_DIR).resolve():
-        if CATALOG_LINE not in config:
-            raise RuntimeError(f"starter {CONFIG} has no `{CATALOG_LINE.strip()}` line to point at {dest}")
-        config = config.replace(CATALOG_LINE, f"catalog: {out.resolve() / CATALOG}\n")
+    if config is None:
+        config = starter(CONFIG)
+        if out.resolve() != pathlib.Path(DEFAULT_DIR).resolve():
+            if CATALOG_LINE not in config:
+                raise RuntimeError(f"starter {CONFIG} has no `{CATALOG_LINE.strip()}` line to point at {dest}")
+            config = config.replace(CATALOG_LINE, f"catalog: {out.resolve() / CATALOG}\n")
     lines = []
-    for name, text in ((CONFIG, config), (CATALOG, starter(CATALOG))):
+    for name, text in ((CONFIG, config), (CATALOG, catalog if catalog is not None else starter(CATALOG))):
         path = out / name
         if path.exists() and not force:
-            lines.append(f"kept     {path} (exists; --force replaces it)")
+            lines.append(f"kept     {path} (exists; {keep_hint})")
             continue
-        path.write_text(text)
+        write(path, text)
         lines.append(f"wrote    {path}")
     cfg = settings.load(str(out / CONFIG), env={})
     for d in data_dirs(cfg):

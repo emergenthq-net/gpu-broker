@@ -147,9 +147,15 @@ host. This file is the reference for security review.
     - Never logged, returned or put in URLs.
   - Only `UPSTREAM_TOKEN_*` variables are loaded as upstream keys (`broker.py`).
     - A catalog `auth_env` naming anything else sends no key.
+  - `gpu-broker setup` (`setup/host.py`) writes a new token to `broker.env`, mode 600, through
+    `install -m 600` when it uses sudo. It prints only the first four characters.
+    - It opens the dashboard as `/dash#token=...`: the fragment never reaches a server or a log,
+      but the browser's command line holds it while it runs. On a machine other people log in
+      to, close that browser, or sign in by hand (the dashboard asks once).
+    - It uses sudo only with `-n`: never a password prompt, never more than the user already has.
   - Release hygiene: `scripts/leak_scan.py` scans the tree, sdist and wheel against a private
     denylist (CI job `leak-scan`).
-- **Tests:** `tests/test_backends.py`, `tests/test_leak_scan.py`.
+- **Tests:** `tests/test_backends.py`, `tests/test_leak_scan.py`, `tests/test_setup.py`.
 
 ### T9. Injection into storage or the dashboard
 
