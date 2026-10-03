@@ -50,13 +50,21 @@ gpu-broker setup --dry-run    # print every change it would make; change nothing
 - **Never as root.** A system service runs as the account that owns the gpu-broker installation;
   when root owns it, setup creates a system account, `gpu-broker`, and runs it as that.
   - GPU access comes from groups: the unit adds `video` and `render` (and `docker` for the docker
-    driver) where they exist.
+    driver) where they exist. Joining `docker` is equivalent to root on the machine, and setup
+    says so when it grants it.
   - Starting and stopping system units goes through `/etc/sudoers.d/gpu-broker`, which lets that
     account run `systemctl start|stop|is-active -- <unit>` for the catalog's units and nothing
     else. Setup checks it with `visudo` before putting it in place, and sets `driver.sudo: true`.
     Add a unit to the catalog later and you add it to that file too.
   - The catalog lives in `/var/lib/gpu-broker/`, which the account owns, because the broker
-    rewrites it. `/etc/gpu-broker/` (config and `broker.env`) stays root's.
+    rewrites it. `/etc/gpu-broker/` (config and `broker.env`) stays root's: if it already exists
+    and is not root's, or its group or others can write it, setup stops and says how to fix it.
+- **Never acts through the account's symlinks.** The account owns its data folder and could swap
+  anything inside it for a symlink (say `inputs` -> `/etc`) before setup runs again. So setup
+  refuses a symlink wherever it creates a folder or writes a file. As root it reaches each path
+  one folder at a time without following links, and sets owners on the open folder. Through
+  sudo, it makes what goes inside the account's folder as the account (`sudo -u`), so root never
+  acts there, and root's own `chown` never follows a link.
 - **Refuses code others could change.** Before installing a service, setup checks the script, its
   Python, and everything installed beside the package: only root or the service account may be
   able to change them, and the account must be able to read them. Install gpu-broker somewhere

@@ -152,7 +152,13 @@ host. This file is the reference for security review.
     symlink) that is renamed into place; it refuses to replace a symlink. It prints only the
     first four characters of the token.
     - `broker.env` stays in a root-owned folder, since systemd reads it as root; the catalog,
-      which the service rewrites, lives in the service account's data folder instead.
+      which the service rewrites, lives in the service account's data folder instead. An
+      existing config folder that is not root's, or that group or others can write, stops setup.
+    - On a re-run, root never follows a symlink the service account could have planted in the
+      folders it owns: as root, paths are opened folder by folder with `O_NOFOLLOW` and owners
+      set on the descriptor; through sudo, files and folders inside the account's folder are
+      made as the account, and root's `chown` uses `-h`. Without this, a link such as
+      `inputs -> /etc` would hand `/etc` to the account (`tests/test_setup.py`).
     - It opens the dashboard as `/dash#token=...`: the fragment never reaches a server or a log,
       but the browser's command line holds it while it runs. On a machine other people log in
       to, close that browser, or sign in by hand (the dashboard asks once).
