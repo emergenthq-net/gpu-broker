@@ -1,9 +1,9 @@
 """`gpu-broker check` validates the shipped examples without running anything."""
 from gpu_broker import cli, settings
-from tests.helpers import FIX, ROOT
+from tests.helpers import ROOT, amdgpu_fixture
 
 EX = ROOT / "examples"
-VEGA = FIX / "amdgpu/vega10"
+VEGA = amdgpu_fixture() / "vega10"
 
 
 def conf(tmp_path, catalog, sys_root=VEGA / "sys"):

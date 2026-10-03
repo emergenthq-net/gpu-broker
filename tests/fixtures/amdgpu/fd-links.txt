@@ -1,0 +1,13 @@
+# /proc/<pid>/fd symlinks of the amdgpu fixtures, one per line: <path under amdgpu/> <target>.
+# Kept as text because sdists drop dangling symlinks; tests.helpers.amdgpu_fixture() recreates them.
+rdna3/proc/2001/fd/5 /dev/dri/renderD128
+rdna3/proc/2001/fd/9 /dev/dri/renderD128
+rdna3/proc/2002/fd/3 /dev/dri/renderD128
+rdna3/proc/2003/fd/4 /dev/dri/renderD128
+rdna3/proc/2004/fd/3 /dev/dri/renderD128
+vega10/proc/1201/fd/3 socket:[48213]
+vega10/proc/1201/fd/7 /dev/dri/renderD128
+vega10/proc/1400/fd/5 /dev/dri/renderD129
+vega10/proc/1500/fd/6 /dev/dri/renderD130
+vega10/proc/1600/fd/8 /var/log/app.log
+vega10/proc/99/fd/4 /dev/dri/card0

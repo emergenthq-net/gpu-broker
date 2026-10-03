@@ -7,9 +7,9 @@ import shutil
 import pytest
 
 from gpu_broker.gpu import GpuSample, Procs, amd
-from tests.helpers import FIX
+from tests.helpers import amdgpu_fixture
 
-AMD = FIX / "amdgpu"
+AMD = amdgpu_fixture()
 
 
 def probe(name, index=0):

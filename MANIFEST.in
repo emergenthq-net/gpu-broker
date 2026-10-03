@@ -1,0 +1,6 @@
+# The sdist is self-testing: unpack it, install it, run pytest. Everything the tests read ships.
+graft tests
+graft host
+graft examples
+graft scripts
+global-exclude *.py[co]

@@ -7,11 +7,11 @@ import time
 
 import pytest
 
-from tests.helpers import FIX, ROOT
+from tests.helpers import ROOT, amdgpu_fixture
 
 HELPER = ROOT / "host/gpu-broker-gpu"
 CTL = ROOT / "host/gpu-broker-ctl"
-AMD = FIX / "amdgpu"
+AMD = amdgpu_fixture()
 FAKE_SMI = r"""#!/bin/bash
 echo "$*" >> "$SMI_LOG"
 n=$(wc -l < "$SMI_LOG")

@@ -42,6 +42,14 @@ jobs:
           cd "$RUNNER_TEMP"   # not the checkout: import the installed package, not the source tree
           wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__')]"
           wheel/bin/gpu-broker demo --help
+      - name: The sdist is self-testing (unpack, install, run the suite)
+        run: |
+          uv build --sdist --out-dir "$RUNNER_TEMP/sdist"
+          mkdir "$RUNNER_TEMP/unpacked" && tar xzf "$RUNNER_TEMP"/sdist/*.tar.gz -C "$RUNNER_TEMP/unpacked"
+          cd "$RUNNER_TEMP"/unpacked/gpu_broker-*/
+          uv venv --python ${{ matrix.python }} .venv
+          uv pip install --python .venv/bin/python "$(ls "$RUNNER_TEMP"/sdist/*.tar.gz)[dev]"
+          .venv/bin/pytest -q -p no:cacheprovider tests
 
   leak-scan:
     # The tree, sdist and wheel must match nothing on the private denylist. The list lives in
