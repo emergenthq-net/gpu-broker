@@ -8,7 +8,10 @@
   call the `Broker`; only the scheduler's GPU thread changes residency, and every LLM call
   holds an `LlmPool` slot; only drivers run
   processes; only `backends.py` makes HTTP calls.
-- **One thing per module**, and no module over 200 lines — split it instead of squeezing it.
+- **One thing per module**: a file you can name with a single noun phrase. If describing it
+  needs "...and also...", split it along that seam. Length is only a hint (past ~150 lines,
+  ask whether it is still one thing). Never squeeze code or cut a module at an arbitrary
+  point just to meet a line count.
 - **No magic values.** A literal that means something (a timeout, a port, a path, a size, an
   event name, a chart colour) is a named constant in `constants.py` or at the top of its
   module/JS file, or a `Settings` field with a documented default. Ruff's `PLR2004` enforces

@@ -38,8 +38,15 @@ Flag each of these. Cite the file and line, and say what to do instead.
   (timeout, port, path, size, limit, event name, colour) belongs in `gpu_broker/constants.py`,
   at the top of its module or JS file, in `gpu_broker/tuning.py`, or as a documented
   `Settings` field. Hosts, URLs, unit names and labels belong in config or the catalog.
-- **Files over ~200 lines.** One thing per module; split instead of squeezing. This applies
-  to Python, JS and the host scripts.
+- **A module that does more than one nameable thing.** Each file (Python, JS, host script)
+  is one thing you can name with a single noun phrase. If describing it needs "...and
+  also...", it is two files: split along that seam, re-exporting from the original module
+  if that keeps imports stable. Line count is only a smoke test: up to ~80 lines is fine,
+  80-150 is worth asking about, 150-200 needs a reason, and over 200 should be decomposed.
+  A file that is one thing is not split just because it is long.
+- **Code compressed or split arbitrarily to meet a line count.** Statements crammed onto
+  one line, helpful names or comments removed, or a module cut at an arbitrary point
+  instead of a real seam, just to get under a number, is a defect in its own right.
 - **Layering** (ARCHITECTURE.md): routes in `web/` call the `Broker`; only the scheduler's GPU
   thread changes residency; only drivers run processes; only `backends.py` makes HTTP calls
   to model servers.
