@@ -158,7 +158,7 @@ def test_a_hung_nvidia_smi_never_stalls_the_gpu_endpoint(tmp_path):
 
     from gpu_broker import settings
     from gpu_broker.broker import Broker
-    from gpu_broker.drivers.local import SystemdDriver
+    from gpu_broker.drivers.systemd import SystemdDriver
     from gpu_broker.web.app import create_app
     from tests.helpers import TOKEN, FakeBackends, FakeDriver, make_settings
     smi = tmp_path / "hung-smi"

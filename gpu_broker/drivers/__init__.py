@@ -172,10 +172,10 @@ def build(settings: Settings, catalog_units: list[UnitRef]) -> Driver:
         allowed = frozenset(u.key for u in [*catalog_units, *extra])
     common: dict[str, Any] = {"allowed": allowed, "timeouts": settings.timeouts, **d.options}
     if d.kind == "systemd":
-        from .local import SystemdDriver
+        from .systemd import SystemdDriver
         return SystemdDriver(sample_s=settings.intervals.gpu_sample_s, gpu=settings.gpu, **common)
     if d.kind == "docker":
-        from .local import DockerDriver
+        from .docker import DockerDriver
         return DockerDriver(sample_s=settings.intervals.gpu_sample_s, gpu=settings.gpu, **common)
     if d.kind == "proxmox":
         from .proxmox import ProxmoxDriver

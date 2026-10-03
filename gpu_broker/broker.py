@@ -1,59 +1,33 @@
-"""The broker: wires configuration, catalog, store, driver, backends and the worker threads
-together, and implements the three operations every route is built from — submit a job,
-view it, wait for it.
+"""The broker: the object every route calls. It owns the parts (catalog, store, driver,
+backends, worker threads), starts and stops them, and offers the three operations routes are
+built from: submit a job (admission.py), view it, wait for it.
 """
 from __future__ import annotations
 
-import contextlib
-import logging
 import os
 import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import Any
 
-from . import drivers, execjob, inputs, media, netguard, schema
+from . import admission, drivers, execjob, netguard
+from .admission import STAGING_FAILED as STAGING_FAILED
+from .admission import StagingError as StagingError
+from .admission import validate_request as validate_request
 from .backends import Backends, HttpBackends
 from .catalog import Catalog
 from .chat import DirectChat
-from .constants import APP_NAME, INPUTS_KEY, SESSION_KEY, TERMINAL, UPSTREAM_TOKEN_PREFIX, Event, JobState, Runner
+from .constants import TERMINAL, UPSTREAM_TOKEN_PREFIX, Event, JobState
 from .downloads import Downloader
 from .metrics import GpuSampler
-from .modelmap import joined
 from .residency import Residency
-from .resolve import resolve
 from .scheduler import Scheduler
 from .sessions import Sessions
 from .settings import Settings
 from .staging import Staging
 from .store import Row, Store
 
-REQUESTER_MAX = 120   # caller labels are stored and shown; keep them short
-STRING_FIELDS = ("model", "kind", "requester")
-
-
-def validate_request(body: Mapping[str, Any]) -> None:
-    """Shape checks on the fields the broker itself interprets; the rest is the model's business."""
-    for f in STRING_FIELDS:
-        if f in body and body[f] is not None and not isinstance(body[f], str):
-            raise ValueError(f"`{f}` must be a string")
-    caps = body.get("caps")
-    if caps is not None and not (isinstance(caps, list) and all(isinstance(c, str) for c in caps)):
-        raise ValueError("`caps` must be a list of strings")
-
-
 STOP_JOIN_S = 5.0   # how long shutdown waits for the sampler thread after closing its stream
-
-log = logging.getLogger(APP_NAME)
-STAGING_FAILED = "could not store the job's input files"
-
-
-class StagingError(Exception):
-    """Submit recorded the job but could not store its input files; the job is FAILED."""
-
-    def __init__(self, jid: str) -> None:
-        super().__init__(STAGING_FAILED)
-        self.jid = jid
 
 
 class Broker:
@@ -119,61 +93,8 @@ class Broker:
 
     def submit(self, body: Mapping[str, Any], requester: str, requested: str | None = None,
                note: str | None = None) -> tuple[str, dict[str, Any]]:
-        """Resolve, record and queue a request; returns (job id, what the caller needs to know).
-        A malformed request, or input files the model cannot take, raise ValueError (HTTP 400)
-        before anything is recorded. `requested`/`note`: the name the caller really sent and why
-        `body["model"]` differs (model_map), recorded on the job and its substitution event."""
-        validate_request(body)
-        given = inputs.slots(body)
-        name = body.get("model") or self.catalog.defaults["resident"]
-        r = resolve(self.catalog.data, name, body.get("kind"), body.get("caps"), session=bool(body.get(SESSION_KEY)),
-                    images=given)
-        files: list[media.InputFile] = []
-        recipe = schema.NOT_EXEC
-        if r.resolved is not None:   # a rejected job never decodes or fetches its files
-            m = self.catalog.models[r.resolved]
-            inputs.check(r.resolved, m, given)
-            inputs.check_counts(r.resolved, m, body)
-            if m.get("runner") == Runner.EXEC:
-                execjob.params(m, body)
-                recipe = m["exec"]["recipe"]
-            files = media.read(body, self.settings.inputs, self.fetch_policy)
-        payload = media.strip(body) | ({INPUTS_KEY: media.summarize(files)} if files else {})
-        # Its own column, never the caller's payload: a restart cleans with it (GpuHold.orphan).
-        asked = requested or name
-        substitution = joined(note, r.substitution)
-        jid = self.store.create_job(requester[:REQUESTER_MAX], asked, payload, exec_recipe=recipe)
-        info: dict[str, Any] = {"requested": asked, "resolved": r.resolved, "substitution": substitution, "notes": r.notes}
-        if r.download:
-            key: str | None
-            if r.register:
-                key = r.download.slug
-                self.catalog.register(key, r.register)
-            else:
-                key = self._key_for_slug(r.download.slug)
-            self.downloads.request(r.download, key)
-            info["download"] = {**r.download.as_dict(), "state": (self.store.download(r.download.slug) or {}).get("state")}
-            self.store.update_job(jid, download=info["download"])
-        if r.resolved is None:
-            self.store.update_job(jid, state=JobState.REJECTED, error=r.error)
-            info["error"] = r.error
-            return jid, info
-        self.store.update_job(jid, resolved=r.resolved, substitution=substitution)
-        if substitution:
-            self.store.event(Event.JOB_SUBSTITUTED, jid, requested=asked, resolved=r.resolved, reason=substitution)
-        try:
-            self.staging.put(jid, files)
-        except OSError as e:   # disk full, permissions: fail the job rather than leave it queued-but-never-run
-            self.store.update_job(jid, state=JobState.FAILED, error=STAGING_FAILED)
-            log.error("job %s: staging input files failed: %s", jid, e)   # paths stay server-side
-            with contextlib.suppress(OSError):
-                self.staging.discard(jid)
-            raise StagingError(jid) from e
-        info["queue_position"] = self.scheduler.submit(jid)
-        return jid, info
-
-    def _key_for_slug(self, slug: str) -> str | None:
-        return next((k for k, m in self.catalog.models.items() if m.get("source", {}).get("slug", k) == slug), None)
+        """Admit a request (admission.py); returns (job id, what the caller needs to know)."""
+        return admission.submit(self, body, requester, requested, note)
 
     def view(self, jid: str) -> Row | None:
         """A job as callers see it: without the request payload, with its queue position."""

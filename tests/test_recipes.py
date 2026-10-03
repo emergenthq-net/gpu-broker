@@ -5,7 +5,8 @@ import subprocess
 import pytest
 
 from gpu_broker.drivers import KILL_AFTER_S, PIPE_DRAIN_S, REAP_WAIT_S, RecipeInfo, recipes
-from gpu_broker.drivers.local import DockerDriver, SystemdDriver
+from gpu_broker.drivers.docker import DockerDriver
+from gpu_broker.drivers.systemd import SystemdDriver
 from gpu_broker.settings import Timeouts
 from tests.helpers import ROOT
 

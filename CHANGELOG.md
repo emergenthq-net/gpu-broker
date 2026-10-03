@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+- Internal: modules that did two things are split along that seam, with no behaviour change.
+  `catalogschema` (entry types and validation) out of `catalog`; `settingsschema` (the
+  dataclasses) out of `settings`; `admission` (job submit) out of `broker`;
+  `drivers.systemd` and `drivers.docker` out of `drivers.local`; `demo.assemble` out of
+  `demo.run`. The old modules re-export the moved names, except the two concrete drivers:
+  import `SystemdDriver` and `DockerDriver` from `gpu_broker.drivers.systemd` and
+  `gpu_broker.drivers.docker` (a re-export from `drivers.local` would be circular).
+
 ## 0.3.2
 
 ### Fixed

@@ -385,7 +385,8 @@ other key fails at catalog load.
 
 The full annotated example is [`examples/catalog.yaml`](examples/catalog.yaml) and the config
 is [`examples/config.yaml`](examples/config.yaml). Every config key and its default is in
-[`gpu_broker/settings.py`](gpu_broker/settings.py); `gpu-broker check` validates both files.
+[`gpu_broker/settingsschema.py`](gpu_broker/settingsschema.py) and
+[`gpu_broker/tuning.py`](gpu_broker/tuning.py); `gpu-broker check` validates both files.
 
 ## API
 
