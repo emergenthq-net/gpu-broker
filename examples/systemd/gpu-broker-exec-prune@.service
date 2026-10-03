@@ -2,7 +2,7 @@
 # /{jid}) once they are older than the age below. The instance is the output root, escaped
 # with systemd-escape --path (a literal "-" must become \x2d), so one template serves any root:
 #   Proxmox (inside the container that runs the recipes, e.g. ComfyUI's):
-#     systemctl enable --now "gpu-broker-exec-prune@$(systemd-escape --path /opt/ComfyUI/output/broker).path"
+#     systemctl enable --now "gpu-broker-exec-prune@$(systemd-escape --path /path/to/ComfyUI/output/broker).path"
 #   systemd driver (on the broker's machine; root of examples/recipes/sharp.recipe):
 #     systemctl enable --now "gpu-broker-exec-prune@$(systemd-escape --path /var/lib/gpu-broker/exec/out).path"
 # Set User= to the folder's owner (ComfyUI's user on Proxmox: gpu-broker-ctl gives each job

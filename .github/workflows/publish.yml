@@ -74,6 +74,14 @@ jobs:
           python -m build
           python -m twine check dist/*
 
+      - name: Leak scan of the tree and the distributions about to be published
+        env:
+          DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+        run: |
+          test -n "$DENYLIST" || { echo "::error::the LEAK_DENYLIST secret is not set"; exit 1; }
+          printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/denylist"
+          python scripts/leak_scan.py --denylist "$RUNNER_TEMP/denylist" . dist/*
+
       - uses: actions/upload-artifact@v7
         with:
           name: dist-${{ steps.release.outputs.tag }}

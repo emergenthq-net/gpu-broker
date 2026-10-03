@@ -5,7 +5,7 @@ A recipe is a file `<recipes dir>/<name>.recipe` of `key=value` lines (no spaces
 carries a job id and input files, and the recipe supplies everything else. The Proxmox host
 script (host/gpu-broker-ctl) reads the same format; the local drivers read it here.
 
-    target=158          container id (Proxmox only; local drivers refuse it)
+    target=101          container id (Proxmox only; local drivers refuse it)
     argv=/opt/tool/bin/predict -i {in_dir} -o {out_dir} -c {checkpoint}
     checkpoint=/models/tool/weights.pt
     in_dir=/var/tmp/gpu-broker/{jid}     input files are written here (removed after the run)

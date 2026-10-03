@@ -43,6 +43,43 @@ jobs:
           wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__')]"
           wheel/bin/gpu-broker demo --help
 
+  leak-scan:
+    # The tree, sdist and wheel must match nothing on the private denylist. The list lives in
+    # the Actions secret LEAK_DENYLIST, never in this repository; hits print file, line and
+    # entry number only. Pull requests from forks get no secrets and skip with a notice.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.2.0
+      - name: Denylist from the LEAK_DENYLIST secret
+        id: denylist
+        env:
+          DENYLIST: ${{ secrets.LEAK_DENYLIST }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+        run: |
+          if [ -n "$DENYLIST" ]; then
+            printf '%s\n' "$DENYLIST" > "$RUNNER_TEMP/denylist"
+            echo "file=$RUNNER_TEMP/denylist" >> "$GITHUB_OUTPUT"
+          elif [ "$FORK" = true ]; then
+            echo "::notice::pull request from a fork: no secrets, so the leak scan is left to the maintainers' run"
+          else
+            echo "::error::the LEAK_DENYLIST secret is not set; refusing to pass without it"; exit 1
+          fi
+      - name: Scan the tree, sdist and wheel
+        if: steps.denylist.outputs.file
+        run: |
+          uv build -q --sdist --wheel --out-dir "$RUNNER_TEMP/dist"
+          python3 scripts/leak_scan.py --denylist "${{ steps.denylist.outputs.file }}" . "$RUNNER_TEMP"/dist/*
+      - name: The demo matches nothing on the denylist
+        if: steps.denylist.outputs.file
+        env:
+          GPU_BROKER_LEAK_DENYLIST: ${{ steps.denylist.outputs.file }}
+        run: |
+          uv venv -q --python 3.12 .venv
+          uv pip install -q --python .venv/bin/python -e '.[dev]'
+          .venv/bin/pytest -q tests/test_demo_sim.py
+
   docker:
     runs-on: ubuntu-latest
     timeout-minutes: 15

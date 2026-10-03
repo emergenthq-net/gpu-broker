@@ -11,7 +11,7 @@ from tests.test_host_ctl_exec import JID, RECIPE
 
 IN = f"/var/tmp/gpu-broker/{JID}"
 OTHER = "0123456789ab"
-SCAN = f"scan 158 GPU_BROKER_JOB={JID}"
+SCAN = f"scan 101 GPU_BROKER_JOB={JID}"
 
 
 @pytest.fixture
@@ -21,23 +21,23 @@ def ctl(tmp_path):
 
 def test_a_missing_output_parent_fails_clearly_and_creates_nothing(ctl):
     r, log, *_ = ctl(f"exec-run t {JID}", no_parent=True)
-    assert r.returncode == 8 and b"output folder /opt/ComfyUI/output/broker is missing in CT 158" in r.stderr
+    assert r.returncode == 8 and b"output folder /srv/outputs/broker is missing in CT 101" in r.stderr
     assert not any("mkdir" in c or "timeout" in c for c in log)
-    assert log[-1] == f"exec 158 -- rm -rf -- {IN}"
+    assert log[-1] == f"exec 101 -- rm -rf -- {IN}"
 
 
 def test_only_the_jobs_folder_is_created_and_it_takes_the_parents_owner(ctl):
     r, log, *_ = ctl(f"exec-run t {JID}")
     assert r.returncode == 0, r.stderr
     made = [c for c in log if "mkdir" in c or "chown" in c]
-    out = f"/opt/ComfyUI/output/broker/{JID}"
-    assert made == [f"exec 158 -- mkdir -m 755 -- {out}", f"exec 158 -- chown -- {ctlfake.OWNER} {out}",
-                    f"exec 158 -- chown -R -- {ctlfake.OWNER} {out}"]   # no -p: the parent is never created
+    out = f"/srv/outputs/broker/{JID}"
+    assert made == [f"exec 101 -- mkdir -m 755 -- {out}", f"exec 101 -- chown -- {ctlfake.OWNER} {out}",
+                    f"exec 101 -- chown -R -- {ctlfake.OWNER} {out}"]   # no -p: the parent is never created
 
 
 def test_the_failed_programs_outputs_are_still_handed_to_the_owner(ctl):
     r, log, *_ = ctl(f"exec-run t {JID}", recipe=RECIPE.replace("--job {jid}", "--job FAIL"))
-    assert r.returncode == 9 and any(c.startswith("exec 158 -- chown -R") for c in log)
+    assert r.returncode == 9 and any(c.startswith("exec 101 -- chown -R") for c in log)
 
 
 def test_exec_run_reaps_workers_that_left_the_programs_group(ctl):
@@ -64,7 +64,7 @@ def test_a_step_that_fails_exits_10_not_its_own_code(tmp_path):
 def test_clean_with_nothing_running_removes_the_inputs(ctl):
     r, log, _, killed, _ = ctl(f"exec-clean t {JID}")
     assert r.returncode == 0, r.stderr
-    assert (log, killed) == ([SCAN, f"exec 158 -- rm -rf -- {IN}"], [])
+    assert (log, killed) == ([SCAN, f"exec 101 -- rm -rf -- {IN}"], [])
 
 
 def test_clean_kills_by_tag_pid_and_group_and_leaves_other_jobs_alone(ctl):
@@ -80,7 +80,7 @@ def test_a_failed_scan_never_counts_as_gone(ctl):
     r, log, *_ = ctl(f"exec-clean t {JID}", scan_fails=1, conf="CLEAN_WAIT_S=30")
     assert r.returncode == 0 and log.count(SCAN) == 2   # the failed scan was retried, not taken as "none"
     r, log, *_ = ctl(f"exec-clean t {JID}", scan_fails="always", conf="CLEAN_WAIT_S=1")
-    assert r.returncode == 7 and log.count(SCAN) >= 1 and log[-1] == f"exec 158 -- rm -rf -- {IN}"
+    assert r.returncode == 7 and log.count(SCAN) >= 1 and log[-1] == f"exec 101 -- rm -rf -- {IN}"
 
 
 def test_a_container_without_a_readable_proc_never_counts_as_gone(tmp_path):
@@ -96,7 +96,7 @@ def test_clean_reports_a_job_that_will_not_die_after_its_wait_in_seconds(ctl):
     r, log, *_ = ctl(f"exec-clean t {JID}", procs=[(700, 700, JID, True)], conf="CLEAN_WAIT_S=2")
     assert r.returncode == 7 and b"still running" in r.stderr
     assert 1 <= time.monotonic() - t0 < 6 and log.count(SCAN) > 2   # bounded by time, not by a try count
-    assert log[-1] == f"exec 158 -- rm -rf -- {IN}"
+    assert log[-1] == f"exec 101 -- rm -rf -- {IN}"
 
 
 def test_clean_waits_for_an_exec_run_in_flight_and_cancels_a_later_one(ctl, tmp_path):
@@ -127,7 +127,7 @@ def test_every_bounded_container_step_also_gets_its_kill_time(ctl, tmp_path):
     r, *_ = ctl(f"exec-clean t {JID}", conf="SCAN_S=15\nSCAN_KILL_S=4", procs=[(700, 700, JID)])
     calls = (tmp_path / "timeout.log").read_text().splitlines()
     assert r.returncode == 0 and len(calls) == 3   # two scans and the input removal
-    assert all(c == "-k 4 15 pct exec 158 --" for c in calls), calls
+    assert all(c == "-k 4 15 pct exec 101 --" for c in calls), calls
 
 
 def test_timings_in_the_conf_must_be_whole_seconds(ctl):
