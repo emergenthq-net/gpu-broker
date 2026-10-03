@@ -86,3 +86,32 @@ def test_frontend_entry_is_never_a_job_target():
     assert CAT["models"]["swarmui"]["session_only"]
     assert resolve(CAT, "swarmui").resolved != "swarmui"
     assert resolve(CAT, "sdxl-base", kind="image").resolved != "swarmui"
+
+
+def test_image_jobs_only_substitute_models_that_take_the_image(cat):
+    image = frozenset({"image"})
+    assert best_substitute(cat, "video", set(), images=image) == "minimax-h3-i2v"
+    assert best_substitute(cat, "video", set(), images=frozenset({"image", "end_image"})) == "minimax-h3-i2v"
+    assert best_substitute(cat, "video", {"t2v"}, images=image) == "wan2.2-5b"   # optional start frame
+    assert best_substitute(cat, "image", {"edit"}, images=image) == "qwen-image-edit"
+    assert best_substitute(cat, "image", {"edit"}) is None                       # edit needs its image
+    assert best_substitute(cat, "video", set()) == "wan2.2-14b-t2v"              # never a model needing one
+
+
+def test_an_unavailable_image_model_is_replaced_by_one_that_takes_the_image(cat):
+    cat["models"]["wan2.2-14b-i2v"]["status"] = "downloadable"
+    r = resolve(cat, "wan2.2-14b-i2v", images=frozenset({"image"}))
+    assert r.resolved == "minimax-h3-i2v" and "wan2.2-14b-i2v" in (r.substitution or "")
+
+
+def test_image_caps_count_only_when_the_job_carries_an_image(cat):
+    """wan2.2-5b is t2v, and i2v only given a start frame: a text job on it must not demand i2v
+    of its stand-in (regression: [t2v, i2v] caps left text jobs with no substitute)."""
+    cat["models"]["wan2.2-5b"]["status"] = "downloadable"
+    r = resolve(cat, "wan2.2-5b")
+    assert r.resolved == "wan2.2-14b-t2v" and "wan2.2-5b" in (r.substitution or "")
+    r = resolve(cat, "wan2.2-5b", images=frozenset({"image"}))   # uses only i2v, so needs only i2v
+    assert r.resolved == "minimax-h3-i2v" and "wan2.2-5b" in (r.substitution or "")
+    cat["models"]["wan2.2-5b"]["status"] = "ready"
+    assert best_substitute(cat, "video", {"i2v"}, images=frozenset({"image"})) == "minimax-h3-i2v"
+    assert best_substitute(cat, "video", {"i2v"}) is None   # no image: 5b's i2v does not count

@@ -1,0 +1,13 @@
+# Runs comfyui-input-prune.service whenever ComfyUI's input folder changes (an upload lands),
+# so pruning follows uploads rather than a clock. Enable with:
+#   systemctl enable --now comfyui-input-prune.path
+# The prune's own deletions change the folder once more; that second run finds nothing to do.
+[Unit]
+Description=Prune gpu-broker input images when ComfyUI's input folder changes
+
+[Path]
+PathChanged=/opt/ComfyUI/input
+Unit=comfyui-input-prune.service
+
+[Install]
+WantedBy=paths.target

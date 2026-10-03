@@ -8,33 +8,41 @@ model is made resident again, so the common case pays no load time.
 """
 from __future__ import annotations
 
+import contextlib
 import queue
 import threading
 import time
 from collections.abc import Callable
 from typing import Any
 
+from . import templates
 from .backends import Backends
 from .catalog import Catalog
-from .constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, SESSION_KEY, Event, JobState, Runner
+from .constants import ERR_EVENT, ERR_JOB, INPUTS_KEY, INTERACTIVE_KEY, SESSION_KEY, Event, JobState, Runner
+from .drivers import GpuHeld
+from .execjob import ExecJobs
+from .holds import GpuHold
 from .llmpool import LlmPool
 from .residency import Residency
 from .sessions import Sessions
 from .settings import Intervals
+from .staging import Staging
 from .store import Store
-from .templates import TEMPLATES
 
 OUTPUT_PREFIX = "broker/"   # ComfyUI output subfolder per job: <prefix><job id>
 
 
 class Scheduler:
     def __init__(self, catalog: Catalog, store: Store, residency: Residency, backends: Backends,
-                 sessions: Sessions, intervals: Intervals, clock: Callable[[], float] = time.monotonic,
+                 sessions: Sessions, intervals: Intervals, staging: Staging, exec_jobs: ExecJobs, clock: Callable[[], float] = time.monotonic,
                  sleep: Callable[[float], None] = time.sleep) -> None:
         self.catalog, self.store, self.res, self.backends = catalog, store, residency, backends
         self.sessions, self.i, self.clock, self.sleep = sessions, intervals, clock, sleep
+        self.staging, self.exec_jobs = staging, exec_jobs
         self.pool = LlmPool(store, backends, self.touch)
         self.paused = threading.Event()        # set by a quiesce: queued jobs wait, in-flight calls finish
+        # Persisted: set when a recipe may still hold the GPU; its clean retries in the background.
+        self.hold = GpuHold(store, residency.driver.clean_recipe, intervals.held_retry_s, clock)
         self._q: queue.Queue[str] = queue.Queue()
         self._lock = threading.Lock()
         self._order: list[str] = []            # queued job ids, for queue positions
@@ -77,6 +85,9 @@ class Scheduler:
             if self.paused.is_set():
                 self.sleep(self.i.paused_s)
                 continue
+            if self.hold.held():
+                self.hold.wait()   # woken at once by a clear or shutdown
+                continue
             try:
                 jid = self._q.get(timeout=self.i.worker_poll_s)
             except queue.Empty:
@@ -110,8 +121,10 @@ class Scheduler:
         if pooled and self.res.current == key and self.res.healthy(key):
             self.pool.dispatch(jid, key, m, payload, interactive)   # returns once a slot is taken
             return
-        self.pool.close_and_drain()     # nothing may be mid-call (queued or direct) while residency changes
         try:
+            if m["runner"] == Runner.EXEC:   # before anything is evicted: a misconfigured recipe evicts nothing
+                self.exec_jobs.check(key, m)
+            self.pool.close_and_drain()     # nothing may be mid-call (queued or direct) while residency changes
             self.store.update_job(jid, state=JobState.SWITCHING)
             self.res.ensure(key, jid)
             self.pool.reopen(self.res.current)   # direct chat may use the new resident now
@@ -119,11 +132,19 @@ class Scheduler:
                 self.pool.dispatch(jid, key, m, payload, interactive)
                 return
             self.store.update_job(jid, state=JobState.RUNNING)
-            self.store.update_job(jid, state=JobState.DONE, result=self._execute(jid, key, payload, session))
+            result = self._execute(jid, key, payload, session)
+            self.store.update_job(jid, state=JobState.DONE, result=result)
         except Exception as e:  # noqa: BLE001 — any failure is reported to the requester
+            if isinstance(e, GpuHeld):   # before the job ends: no next job may take the GPU
+                self.hold.set(jid, m.get("exec", {}).get("recipe", ""), str(e))
             # Reopen first: a caller that sees the failure and retries must find the pool open.
             self.pool.reopen(self.res.current)   # a failed switch must not leave the pool closed
             self.store.update_job(jid, state=JobState.FAILED, error=str(e)[:ERR_JOB])
+        finally:
+            # After the terminal state, and never able to change it: the files were uploaded or
+            # handed to the recipe, and a file left behind is cleared at the next start.
+            with contextlib.suppress(OSError):
+                self.staging.discard(jid)
 
     def _execute(self, jid: str, key: str, payload: dict[str, Any], session: bool) -> dict[str, Any]:
         m = self.catalog.models[key]
@@ -131,10 +152,20 @@ class Scheduler:
             out = self.sessions.hold(jid, key, payload)
             self._restore_now = True
             return out
-        if "template" not in m:
+        if "template" not in m and m["runner"] != Runner.EXEC:
             raise RuntimeError("session-only model: open it from the dashboard (POST /v1/sessions)")
-        graph = TEMPLATES[m["template"]](payload, m.get("params", {}), OUTPUT_PREFIX + jid)
+        self._check_staged(jid, payload)
+        if m["runner"] == Runner.EXEC:
+            return self.exec_jobs.run(jid, key, m, payload)
+        uploaded = self.staging.upload(jid, self.backends.comfy_upload)   # {slot: ComfyUI input file}
+        graph = templates.build(m, {**payload, **uploaded}, OUTPUT_PREFIX + jid)
         return self.backends.comfy_run(key, graph, jid)
+
+    def _check_staged(self, jid: str, payload: dict[str, Any]) -> None:
+        """The files on disk must be the ones accepted at submit; a vanished file fails the job."""
+        recorded = {slot: len(v) if isinstance(v, list) else 1 for slot, v in payload.get(INPUTS_KEY, {}).items()}
+        if (staged := self.staging.received(jid)) != recorded:
+            raise RuntimeError(f"input files missing: expected {recorded}, found {staged}")
 
     def maybe_restore(self) -> None:
         """Bring the default model back once the GPU has been idle long enough."""

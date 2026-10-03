@@ -8,7 +8,7 @@ const KIND_ORDER = ["ui", "llm", "image", "video", "3d"];
 const DEFAULT_IDLE_MIN = 15;
 const WINDOW_NAME = "comfy";
 const TEMPLATE_QUERY = "/?template=";
-const READY = "ready", NEEDS_INTEGRATION = "needs_integration", LLM_UNIT = "llm_unit", COMFY = "comfy";
+const READY = "ready", NEEDS_INTEGRATION = "needs_integration", LLM_UNIT = "llm_unit", COMFY = "comfy", EXEC_RUNNER = "exec";
 const SAFE_URL = /^https?:\/\//;
 
 let pending = null;   // {job, model, template, open, win} while a session waits for the GPU
@@ -26,7 +26,9 @@ function action(k, m, res, ses) {
            ` data-open="${esc(m.open_url || "")}">Open</button>`;
   if (pending && pending.model === k) return `<span class="warn">switching…</span>`;
   if (m.runner === COMFY && m.status === READY)
-    return `<button data-action="use" data-model="${esc(k)}">${m.open_url ? "Open " + esc(k) : "Use in ComfyUI"}</button>`;
+    return `<button data-action="use" data-model="${esc(k)}">${m.open_url ? "Open " + esc(k) : "Use in ComfyUI"}</button>` +
+           imageButton(k, m);
+  if (m.runner === EXEC_RUNNER && m.status === READY) return imageButton(k, m).trim();
   return "";
 }
 
@@ -41,7 +43,18 @@ function drawIndex(models, st) {
     $("ses").innerHTML = `<b>${esc(ses.model)}</b> has the GPU · idle ${ses.idle_for_s}s · returns to ` +
       `${esc(res || UI.resident_label)} in <b>${min}m ${sec}s</b> of no rendering ` +
       `<button data-action="end">Done — give GPU back</button>`;
-  } else $("ses").textContent = pending ? "Waiting for the GPU…" : `GPU is with ${res || "nothing"} (${UI.resident_label}). Pick a model to borrow it.`;
+  } else $("ses").textContent = pending ? "Waiting for the GPU…" : gpuLine(models, st) + " Pick a model to borrow it.";
+}
+
+// Who has the card when no session does: the resident model, a job it was lent to, or nobody.
+function gpuLine(models, st) {
+  const res = st.resident_llm, job = st.running, key = job && (job.using || job.requested);
+  if (res) return `GPU is with ${res} (${UI.resident_label}).`;
+  if (key) {
+    const kind = models[key] && models[key].kind;
+    return `GPU is lent to ${key}${kind ? ` (${kind})` : ""}; ${UI.resident_label} returns when it's done.`;
+  }
+  return "GPU is free.";
 }
 
 function uiUrl(template, open) {

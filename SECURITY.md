@@ -38,9 +38,61 @@ single shared secret: give it only to clients you would let use the GPU freely.
 - **Touch files outside the roots.** Downloads land in `<models_root>/<slug>`; links are
   created only under ComfyUI's model directories; both ends are resolved (symlinks included)
   and must stay inside their root.
-- **Make the broker fetch arbitrary URLs (SSRF).** The broker contacts only `comfy.url` and
-  catalog `endpoint`s, http(s) only. Models registered from a request never carry an
-  endpoint or unit. Values from backends are URL-escaped before reuse.
+- **Make the broker fetch arbitrary URLs (SSRF)** — unless the operator enables
+  `inputs.allow_urls`. The broker contacts only `comfy.url` and catalog `endpoint`s, http(s)
+  only. Models registered from a request never carry an endpoint or unit. Values from
+  backends are URL-escaped before reuse. With `inputs.allow_urls` on, a token holder can make
+  the broker GET `image_url`, `end_image_url` and `video_url`, but only at **public**
+  addresses: every connection (the first request and each redirect hop) resolves the host,
+  refuses unless every address is globally routable — loopback, private, link-local (cloud
+  metadata), shared and unspecified ranges are refused, and an IPv6 address that carries an
+  IPv4 one (IPv4-mapped, NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, IPv4-compatible
+  `::a.b.c.d`) must pass for the embedded IPv4 address too — and then connects to that vetted
+  address, so DNS rebinding between check and connect does not help. Environment proxies are
+  ignored. Operators can allow specific networks with `inputs.url_allow_networks` (CIDRs);
+  anything listed there becomes reachable by every token holder. One exception lets a
+  job's output URL feed the next job: a `GET /view?type=output` (one `type`, no `..` in
+  `filename` or `subfolder`) may reach the broker's own ComfyUI — the addresses the hosts of
+  `comfy.url` and `comfy.public_url` resolve to, on their ports. Other paths, other jobs'
+  inputs (`type=input`), and other ports on that host stay unreachable. `inputs.fetch_s`
+  bounds the whole fetch — name resolution, each connection attempt, TLS, headers and body,
+  across every redirect hop: each step gets only the time left, and when it runs out a timer
+  shuts the sockets down, which ends a read however slowly the server drips bytes. Name
+  lookups run on a fixed set of four daemon threads, so hanging resolvers cannot multiply
+  threads; IP literals are not looked up. A redirect's body is never read. The body is read
+  up to the slot's size cap, and one shorter than its Content-Length is refused. Every
+  failure — network, refusal, timeout, size, format — gives the same `could not be fetched`
+  error, so callers cannot map what the broker reaches.
+  (`frames` are inline only.)
+- **Upload arbitrary files.** Input images must be PNG, JPEG or WebP and videos MP4, MOV or
+  WebM by their magic bytes (`inputs.types`, `inputs.video_types`), agree with any declared
+  type, and fit the size caps. They are stored under names the broker derives from the job id
+  and slot (`broker-<job id>-<slot>.<ext>` in ComfyUI, `<slot>[-NN].<ext>` for exec recipes),
+  never a caller-supplied name.
+- **Choose what an exec job runs.** A catalog `exec` entry names a recipe; the recipe file,
+  written by the host's administrator, holds the whole command, its paths, output glob and
+  timeout. A job contributes only the recipe name (fixed by the catalog), its job id and its
+  input files. On Proxmox those three cross SSH as `exec-put <recipe> <job id> <file name>`
+  (the file on stdin, capped by `MAX_PUT_BYTES`), `exec-run <recipe> <job id>`, and, when a
+  run's outcome is unknown, `exec-clean <recipe> <job id>` (kill every process of the job,
+  remove its inputs, and cancel an exec-run of it still in flight; `exec-info <recipe>` only
+  reports timings); the host script re-checks each against the same grammars, reads the
+  recipe without sourcing it, splits `argv` on spaces with globbing off, and runs it with `pct
+  exec` and no shell as `env -- GPU_BROKER_JOB=<job id> argv...` (so argv[0] may not contain
+  `=` or start with `-`). The job's processes are found by that tag in /proc/*/environ inside
+  the container, which a worker keeps when it leaves the process group, and killed by pid and
+  group (never group 1). The job's output folder is
+  created inside an existing parent and given the parent's owner, never a new root-owned
+  tree. The broker never hands the GPU on while a recipe may still run: if no scan confirms
+  the job gone (a scan that cannot read a process of the job's user, or a /proc that hides
+  a pid known to be alive, counts as "not confirmed"), it sets a persisted GPU hold that
+  resume and restarts keep, and a broker restarted while an exec job ran sets it before
+  taking any job; only a later successful clean or `POST /v1/admin/gpu-held/clear` lifts it.
+  Request
+  values in `exec.params` reach the program only as data in `params.json` (numbers, booleans
+  and short strings). The program itself runs with the container's (or, on the systemd
+  driver, the broker's) privileges, so only install recipes for programs you trust with
+  attacker-chosen input files.
 - **Read secrets.** The API token and `UPSTREAM_TOKEN_*` keys are read from the environment,
   never logged, never returned, and never placed in URLs. Only env vars with the
   `UPSTREAM_TOKEN_` prefix can be referenced by a catalog `auth_env`.
@@ -86,7 +138,12 @@ when that matters.
 ### Data at rest
 
 The SQLite database and JSONL log hold full requests and results (prompts, chat messages,
-output paths). Protect `/var/lib/gpu-broker` and `/var/log/gpu-broker` accordingly and rotate
+output paths), but not input files: those wait in `inputs.staging_dir` (mode 0600) until the
+job runs, are then copied into ComfyUI's input folder (or an exec recipe's `in_dir`), and are
+deleted from the staging directory when the job ends. Exec recipes delete their `in_dir`
+after each run. ComfyUI has no API to delete its copy and the broker has no access to
+ComfyUI's filesystem; install `examples/systemd/comfyui-input-prune.{path,service}` beside
+ComfyUI: on each upload it deletes `broker-*` inputs older than the longest job. Protect `/var/lib/gpu-broker` and `/var/log/gpu-broker` accordingly and rotate
 the JSONL log.
 
 ### Out of scope

@@ -8,6 +8,8 @@ falls back to a default. Secrets (the API token, model-server keys) are environm
 from __future__ import annotations
 
 import dataclasses
+import ipaddress
+import json
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -15,11 +17,19 @@ from typing import Any
 
 import yaml
 
+from .gpu import check_index
+from .modelmap import parse_map
+from .tuning import Gpu as Gpu
+from .tuning import Intervals as Intervals
+from .tuning import Limits as Limits
+from .tuning import Timeouts as Timeouts
 from .units import UnitRef, unit_ref
 
-DEFAULT_PATH = "/etc/gpu-broker/config.yaml"
-CONFIG_ENV = "BROKER_CONFIG"
+Network = ipaddress.IPv4Network | ipaddress.IPv6Network
+
+DEFAULT_PATH, CONFIG_ENV = "/etc/gpu-broker/config.yaml", "BROKER_CONFIG"
 TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+SCALARS: Mapping[str, type] = {"int": int, "float": float, "str": str}
 
 
 @dataclass(frozen=True)
@@ -34,6 +44,8 @@ class Server:
 @dataclass(frozen=True)
 class Comfy:
     url: str = "http://127.0.0.1:8188"   # as the broker reaches ComfyUI
+    # ComfyUI's output folder as exec recipes see it: an exec output under it gets a /view URL.
+    output_dir: str = ""
     public_url: str = ""                 # as browsers reach it (dashboard, output URLs); "" = url
     unit: UnitRef | None = None          # started if ComfyUI is found down; None = never started
 
@@ -50,48 +62,30 @@ class Driver:
 
 
 @dataclass(frozen=True)
-class Timeouts:
-    llm_start_s: float = 240      # an LLM unit must answer its health check within this
-    comfy_start_s: float = 180    # ComfyUI must answer /system_stats within this after a start
-    llm_call_s: float = 1800      # one chat completion
-    comfy_run_s: float = 3600     # one ComfyUI graph, queued to finished
-    comfy_submit_s: float = 600   # POST /prompt
-    comfy_http_s: float = 15      # /free, /history
-    health_s: float = 5           # one health probe
-    unit_s: float = 180           # one start/stop/is-active
-    gpu_query_s: float = 20       # one nvidia-smi call
-    download_s: float = 21600     # one model download
-    git_s: float = 3600           # one git clone/pull
-    ssh_connect_s: int = 10
-    container_stop_s: int = 30    # docker stop grace period
-    chat_wait_s: float = 570      # /v1/chat/completions: queue + switch + run
-    job_wait_s: float = 3600      # POST /v1/jobs with wait=true
-    quiesce_wait_s: float = 900   # POST /v1/admin/quiesce default
+class Inputs:
+    """Input files: images (`image`, `end_image`, `frames`) and a `video`, checked at submit."""
+    max_bytes: int = 20 * 1024 * 1024          # per image, after base64 decoding
+    video_max_bytes: int = 100 * 1024 * 1024   # the video, after decoding
+    max_frames: int = 64                       # images in one `frames` list
+    types: tuple[str, ...] = ("png", "jpeg", "webp")        # image formats, checked by magic bytes
+    video_types: tuple[str, ...] = ("mp4", "mov", "webm")   # video containers, checked the same way
+    allow_urls: bool = False   # accept `<slot>_url`: the broker then fetches caller-chosen URLs
+    fetch_s: float = 30        # one `<slot>_url` download, start to last byte
+    staging_dir: str = "/var/lib/gpu-broker/inputs"   # held here until the job hands them on
+    # `<slot>_url` may only reach public addresses; CIDRs listed here are allowed as well
+    # (e.g. a LAN file host). Loopback, private, link-local and unspecified are refused otherwise.
+    # The broker's own ComfyUI (comfy.url / comfy.public_url host and port) is always allowed.
+    # Parsed once, here: CIDR strings from YAML become network objects.
+    url_allow_networks: tuple[Network, ...] = ()
 
-
-@dataclass(frozen=True)
-class Intervals:
-    worker_poll_s: float = 5      # GPU worker wakes this often when idle (idle restore check)
-    paused_s: float = 1           # GPU worker re-checks a quiesce this often
-    health_poll_s: float = 2      # while waiting for an LLM or ComfyUI to come up
-    comfy_poll_s: float = 2       # while waiting for a ComfyUI graph to finish
-    session_poll_s: float = 5     # interactive session activity check
-    job_wait_poll_s: float = 1    # blocking API calls re-read the job this often
-    gpu_sample_s: float = 2       # local GPU sampler period (the Proxmox host script has its own)
-    sampler_retry_s: float = 5    # reconnect delay after the GPU stream drops
-    gpu_cache_s: float = 5        # /v1/gpu serves a cached reading at most this old
-
-
-@dataclass(frozen=True)
-class Limits:
-    gpu_samples: int = 1800       # dashboard history (~1 h at 2 s)
-    metrics_window_s: float = 3600
-    metrics_jobs: int = 200
-    stats_window_s: float = 86400
-    event_lookback_s: float = 7200  # a job's phase events may predate its window by this much
-    status_downloads: int = 30
-    status_recent: int = 20
-    events_page: int = 500        # most events one /v1/events call returns
+    def __post_init__(self) -> None:
+        nets = []
+        for cidr in self.url_allow_networks:
+            try:
+                nets.append(ipaddress.ip_network(cidr, strict=False))
+            except ValueError:
+                raise ValueError(f"inputs.url_allow_networks: {cidr!r} is not a network (e.g. 192.168.1.0/24)") from None
+        object.__setattr__(self, "url_allow_networks", tuple(nets))
 
 
 @dataclass(frozen=True)
@@ -112,10 +106,15 @@ class Settings:
     server: Server = field(default_factory=Server)
     comfy: Comfy = field(default_factory=Comfy)
     driver: Driver = field(default_factory=Driver)
+    gpu: Gpu = field(default_factory=Gpu)
     timeouts: Timeouts = field(default_factory=Timeouts)
     intervals: Intervals = field(default_factory=Intervals)
     limits: Limits = field(default_factory=Limits)
+    inputs: Inputs = field(default_factory=Inputs)
     ui: Ui = field(default_factory=Ui)
+    # Hosted model names -> catalog models, first matching glob wins: {"gpt-*": "@default"}.
+    # Only names the catalog does not know are mapped. Env: BROKER_MODEL_MAP as a JSON object.
+    model_map: Mapping[str, str] = field(default_factory=dict)
     source: str | None = None     # the file these came from, for the startup event
 
 
@@ -129,7 +128,13 @@ ENV: Mapping[str, tuple[str, ...]] = {   # env var -> settings path
     "BROKER_GRACEFUL_SHUTDOWN_S": ("server", "graceful_shutdown_s"),
     "BROKER_COMFY_URL": ("comfy", "url"),
     "BROKER_DRIVER": ("driver", "kind"),
+    "BROKER_GPU_VENDOR": ("gpu", "vendor"),
+    "BROKER_GPU_INDEX": ("gpu", "index"),
     "BROKER_CHAT_WAIT_S": ("timeouts", "chat_wait_s"),
+    "BROKER_INPUT_MAX_BYTES": ("inputs", "max_bytes"),
+    "BROKER_INPUT_URLS": ("inputs", "allow_urls"),
+    "BROKER_INPUT_DIR": ("inputs", "staging_dir"),
+    "BROKER_MODEL_MAP": ("model_map",),
 }
 
 
@@ -175,16 +180,19 @@ def _build(cls: type[Any], data: Mapping[str, Any], where: str) -> Any:
     return cls(**kwargs)
 
 
-SCALARS: Mapping[str, type] = {"int": int, "float": float, "str": str}
-
-
 def _coerce(name: str, value: Any, annotation: str) -> Any:
     if name == "unit":
         return None if value in (None, "") else unit_ref(value)
+    if name == "model_map":
+        return parse_map(json.loads(value) if isinstance(value, str) else value or {})
     if name == "allowed_units":
         return None if value is None else tuple(unit_ref(u) for u in value)
+    if name == "index":
+        return check_index(value)
     if annotation == "bool":
         return value.strip().lower() in TRUE_WORDS if isinstance(value, str) else bool(value)
+    if annotation.startswith("tuple") and isinstance(value, list):
+        return tuple(value)
     if annotation in SCALARS and value is not None:
         value = SCALARS[annotation](float(value) if annotation == "int" else value)
     if isinstance(value, str) and name.endswith("url"):

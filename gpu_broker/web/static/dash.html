@@ -43,6 +43,7 @@
   <h1>gpu-broker <small id="upd">connecting…</small></h1>
   <div id="tok"><input id="t" type="password" placeholder="broker token" autocomplete="off">
     <button data-action="save-token">Save</button></div>
+  <div id="held" class="card bad" hidden></div>
   <div class="grid">
     <div class="card"><h2 id="gpuT">GPU</h2><div class="big" id="vram">–</div>
       <div class="bar"><i id="vbar" style="width:0"></i></div><div class="mute" id="util"></div></div>
@@ -50,7 +51,7 @@
     <div class="card"><h2>Running</h2><div class="big" id="run">idle</div><div class="mute" id="runsub"></div></div>
     <div class="card"><h2>Last 24 h</h2><div class="big" id="sum">–</div><div class="mute" id="evs"></div></div>
   </div>
-  <div class="card wide"><h2>Models — click to use</h2><div id="ses" class="mute" style="margin-bottom:8px">–</div>
+  <div class="card wide"><h2>Models — click to use</h2><div id="ses" class="mute" style="margin-bottom:8px">–</div><div id="imgJob" class="mute" style="margin-bottom:8px"></div>
     <table><thead><tr><th>kind</th><th>model</th><th>VRAM</th><th>status</th><th></th></tr></thead><tbody id="idx"></tbody></table></div>
   <h2 style="margin-top:14px">Live <span class="mute" id="lErr" style="text-transform:none"></span></h2>
   <div class="grid">
@@ -58,7 +59,7 @@
     <div class="card"><h2>GPU utilization</h2><div class="big" id="lUtil">–</div><canvas id="cUtil"></canvas></div>
     <div class="card"><h2>Power</h2><div class="big" id="lPow">–</div><canvas id="cPow"></canvas></div>
     <div class="card"><h2>Temperature</h2><div class="big" id="lTemp">–</div><canvas id="cTemp"></canvas></div>
-    <div class="card"><h2>Generation tok/s per job · 1 h</h2><div class="mute" id="lTps">–</div><canvas id="cTps"></canvas></div>
+    <div class="card"><h2>Tok/s per job · 1 h</h2><div class="mute" id="lTps">–</div><canvas id="cTps"></canvas></div>
     <div class="card"><h2>Latency per job · 1 h</h2><div class="mute"><span class="ttft">●</span> time to first token
       <span class="mute">●</span> total</div><canvas id="cLat"></canvas></div>
     <div class="card"><h2>Last hour · p50 / p95</h2><div class="kv">
@@ -80,6 +81,7 @@
 </main>
 <script src="/dash/dash.js"></script>
 <script src="/dash/live.js"></script>
+<script src="/dash/imagejob.js"></script>
 <script src="/dash/index.js"></script>
 </body>
 </html>

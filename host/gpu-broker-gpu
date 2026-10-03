@@ -1,0 +1,185 @@
+#!/bin/bash
+# gpu-broker-gpu — GPU readings for gpu-broker-ctl's `gpu` and `gpustream` verbs (installed next
+# to it). The same rules as the broker's own probes (gpu_broker/gpu/):
+#   read    one line `used,total,util` (MiB, MiB, %)
+#   stream  every $SAMPLE_S s: `used,total,util,power,temp,clock|<ct>:<mib> ...` (W, °C, MHz;
+#           a value the card does not report is left empty; <ct> is the LXC owning the
+#           process, or `host`; `!procs-unreadable` when some processes could not be read)
+# Only used and total memory are required; a failure to read them ends `read` or `stream` with
+# a non-zero exit and one error line.
+# Vendor: GPU_VENDOR=auto|nvidia|amd. auto: nvidia when nvidia-smi is installed (it must answer,
+# retried once a second; never falls back to AMD), else the first amdgpu card. GPU_BUDGET_S
+# bounds a `read`, the choice included, and `stream`'s choice, in wall-clock time: every
+# nvidia-smi call gets at most what is left of it (and NV_TIMEOUT_S), so an answer or the error
+# arrives before the broker's SSH call gives up (tests/test_host_gpu_budget.py).
+# auto is decided once and cached in $GPU_CACHE_DIR until $GPU_CONF changes. GPU_INDEX picks the
+# card. amd needs no ROCm tools: sysfs, and the DRM fdinfo of /proc for per-process VRAM.
+# SYSFS_ROOT/PROC_ROOT exist for tests.
+set -euo pipefail
+# A function run in $(...) does not inherit errexit (bash < 4.4 has no inherit_errexit): every
+# assignment from one that may fail ends with `|| exit`, so the failure reaches the top level.
+shopt -s inherit_errexit 2>/dev/null || true
+GPU_VENDOR="${GPU_VENDOR:-auto}"; GPU_INDEX="${GPU_INDEX:-0}"; SAMPLE_S="${SAMPLE_S:-2}"
+NV_TIMEOUT_S="${NV_TIMEOUT_S:-10}"; GPU_BUDGET_S="${GPU_BUDGET_S:-8}"; GPU_CACHE_DIR="${GPU_CACHE_DIR:-}"; GPU_CONF="${GPU_CONF:-}"
+SYSFS_ROOT="${SYSFS_ROOT:-/sys}"; PROC_ROOT="${PROC_ROOT:-/proc}"
+AMD_VENDOR=0x1002; MIB=1048576; MICRO=1000000; MILLI=1000
+POWER_FMT=%.1f                          # gpu_broker.gpu.POWER_DECIMALS
+UNREADABLE='!procs-unreadable'          # gpu_broker.gpu.PROCS_UNREADABLE
+NO_GPU=6
+[[ "$GPU_VENDOR" =~ ^(auto|nvidia|amd)$ && "$GPU_INDEX" =~ ^(0|[1-9][0-9]*)$ && "$SAMPLE_S" =~ ^[0-9]+(\.[0-9]+)?$ \
+   && "$NV_TIMEOUT_S" =~ ^[0-9]+$ && "$GPU_BUDGET_S" =~ ^[1-9][0-9]*$ ]] \
+  || { echo "GPU_VENDOR (auto|nvidia|amd), GPU_INDEX, SAMPLE_S, NV_TIMEOUT_S or GPU_BUDGET_S is invalid" >&2; exit 2; }
+DEADLINE=$((SECONDS + GPU_BUDGET_S))    # `stream` clears it once the vendor is chosen
+die(){ echo "$1" >&2; exit "$NO_GPU"; }
+
+amd_cards(){   # amdgpu device dirs, by card number
+  local d n v
+  for d in "$SYSFS_ROOT"/class/drm/card*; do
+    n="${d##*/}"; [[ "$n" =~ ^card([0-9]+)$ ]] || continue
+    v=$(cat "$d/device/vendor" 2>/dev/null) || continue
+    if [[ "$v" == "$AMD_VENDOR" && -f "$d/device/mem_info_vram_total" ]]; then echo "${BASH_REMATCH[1]} $d/device"; fi
+  done | sort -n | cut -d" " -f2-
+}
+smi(){   # NV_TIMEOUT_S per call (0: none), and within the deadline (-k 1: SIGKILL a second later)
+  local t=$NV_TIMEOUT_S left
+  if [[ -n "$DEADLINE" ]]; then
+    left=$((DEADLINE - SECONDS - 1))
+    (( t == 0 || left < t )) && t=$left
+    (( t >= 1 )) || return 124
+  fi
+  timeout -k 1 "$t" nvidia-smi "$@"
+}
+choose(){   # auto: the vendor, deciding nothing on a failing nvidia-smi
+  local cards
+  if command -v nvidia-smi >/dev/null; then
+    until smi -L >/dev/null 2>&1; do   # once a second, while the deadline leaves time for a call
+      (( DEADLINE - SECONDS > 2 )) || die "nvidia-smi is installed but did not answer within $GPU_BUDGET_S s; not falling back to another vendor's card (set GPU_VENDOR=amd to read an AMD card)"
+      sleep 1
+    done
+    cards=$(amd_cards)
+    [[ -n "$cards" ]] && echo "gpu-broker-gpu: auto chose nvidia (nvidia-smi answers); an amdgpu card is also present, set GPU_VENDOR=amd to read it" >&2
+    echo nvidia; return
+  fi
+  cards=$(amd_cards)
+  [[ -n "$cards" ]] || die "no GPU found: nvidia-smi is not installed and no amdgpu card is listed under $SYSFS_ROOT/class/drm (set GPU_VENDOR)"
+  echo amd
+}
+vendor(){   # auto is decided once per conf: cached in $GPU_CACHE_DIR while newer than $GPU_CONF
+  [[ "$GPU_VENDOR" != auto ]] && { echo "$GPU_VENDOR"; return; }
+  local f="${GPU_CACHE_DIR:+$GPU_CACHE_DIR/vendor}" key="auto $GPU_INDEX" c v
+  if [[ -n "$f" && -f "$f" ]] && { [[ -z "$GPU_CONF" ]] || [[ "$f" -nt "$GPU_CONF" ]]; }; then
+    c=$(cat "$f" 2>/dev/null) || c=""
+    [[ "$c" =~ ^"$key "(nvidia|amd)$ ]] && { echo "${BASH_REMATCH[1]}"; return; }
+  fi
+  v=$(choose) || exit
+  if [[ -n "$f" ]]; then
+    { mkdir -p -m 700 "$GPU_CACHE_DIR" && echo "$key $v" > "$f.$$" && mv -f "$f.$$" "$f"; } 2>/dev/null || rm -f "$f.$$"
+  fi
+  echo "$v"
+}
+ct_of(){ local c; c=$(grep -o "/lxc/[0-9]*" "$PROC_ROOT/$1/cgroup" 2>/dev/null | head -1 | cut -d/ -f3) || true; echo "${c:-host}"; }
+
+# ---- nvidia: any "[...]" ("[N/A]", "[Not Supported]", ...) is an unknown value ---------------
+nv(){ local out; out=$(smi -i "$GPU_INDEX" "$@" --format=csv,noheader,nounits) \
+        || die "nvidia-smi $1 failed or did not answer within $NV_TIMEOUT_S s"
+      tr -d " " <<< "$out" | sed -E 's/\[[^]]*\]//g'; }
+need(){   # need <used,total,...>: the line, if used and total are numbers
+  [[ "$1" =~ ^[0-9.]+,[0-9.]+(,|$) ]] || die "no GPU memory used or total in: $1"
+  echo "$1"
+}
+nv_read(){ local g; g=$(nv --query-gpu=memory.used,memory.total,utilization.gpu) || exit; need "$g"; }
+nv_line(){
+  local g apps pr="" pid mib
+  g=$(nv --query-gpu=memory.used,memory.total,utilization.gpu,power.draw,temperature.gpu,clocks.sm) || exit
+  g=$(need "$g") || exit
+  apps=$(nv --query-compute-apps=pid,used_memory) || exit
+  while IFS=, read -r pid mib; do [[ -n "$pid" ]] && pr+=" $(ct_of "$pid"):$mib"; done <<< "$apps"
+  echo "$g|$pr"
+}
+
+# ---- amd: Documentation/gpu/amdgpu (sysfs) and drm-usage-stats.rst (fdinfo) ---------------------
+amd_dev(){
+  local dev; dev=$(amd_cards | sed -n "$((GPU_INDEX + 1))p")
+  [[ -n "$dev" ]] || die "GPU_INDEX $GPU_INDEX: no such amdgpu card under $SYSFS_ROOT/class/drm"
+  echo "$dev"
+}
+num(){ local v; v=$(cat "$1" 2>/dev/null) && [[ "$v" =~ ^[0-9]+$ ]] && echo "$v"; }
+hwmon(){   # hwmon <dev> <file>...: the first readable value among the files, in every hwmon dir
+  local dev=$1 h f; shift
+  for h in "$dev"/hwmon/hwmon*; do for f in "$@"; do num "$h/$f" && return; done; done
+  return 0
+}
+amd_read(){   # used and total are required; utilisation is unknown while the card is suspended
+  local dev=$1 used total busy
+  used=$(num "$dev/mem_info_vram_used") && total=$(num "$dev/mem_info_vram_total") \
+    || die "cannot read mem_info_vram_used or mem_info_vram_total under $dev"
+  busy=$(num "$dev/gpu_busy_percent") || busy=""
+  echo "$((used / MIB)),$((total / MIB)),$busy"
+}
+amd_line(){
+  local dev=$1 head p t c pdev procs pr="" pid mib
+  head=$(amd_read "$dev") || exit
+  p=$(hwmon "$dev" power1_average power1_input); t=$(hwmon "$dev" temp1_input); c=$(hwmon "$dev" freq1_input)
+  [[ -n "$p" ]] && p=$(awk -v v="$p" -v m="$MICRO" -v f="$POWER_FMT" 'BEGIN { printf f, v / m }')
+  [[ -n "$t" ]] && t=$((t / MILLI)); [[ -n "$c" ]] && c=$((c / MICRO))
+  pdev=$(sed -n 's/^PCI_SLOT_NAME=//p' "$dev/uevent" 2>/dev/null | head -1) || pdev=""
+  procs=$(amd_procs "$pdev") || exit
+  while read -r pid mib; do
+    [[ -z "$pid" ]] && continue
+    if [[ "$pid" == "$UNREADABLE" ]]; then pr+=" $UNREADABLE"; else pr+=" $(ct_of "$pid"):$mib"; fi
+  done <<< "$procs"
+  echo "$head,$p,$t,$c|$pr"
+}
+amd_procs(){   # amd_procs <pdev>: "<pid> <MiB>" per process (one DRM client counted once), then
+  # $UNREADABLE if some process's fds could not be read. Only fds linking into /dev/dri/ are
+  # read (find -lname reads the links; no fork per fd). sort -V: pids, then fds, in numeric
+  # order (as the broker's probe walks them). /dev/null: grep never reads stdin.
+  local d ok=() unreadable=""
+  for d in "$PROC_ROOT"/[0-9]*/fd; do
+    [[ -e "$d" ]] || continue                         # gone, or no process at all
+    if [[ -r "$d" && -x "$d" ]]; then ok+=("$d"); else unreadable=1; fi
+  done
+  if (( ${#ok[@]} )); then
+    { find "${ok[@]}" -mindepth 1 -maxdepth 1 -lname "/dev/dri/*" 2>/dev/null || true; } \
+      | sed -E 's#/fd/([0-9]+)$#/fdinfo/\1#' | sort -V \
+      | { xargs grep -s -E '^(drm-driver|drm-pdev|drm-client-id|drm-memory-vram|drm-resident-vram):' /dev/null || true; } \
+      | awk -v pdev="$1" -v mib="$MIB" -f <(cat <<'AWK'
+{ i = index($0, ":"); f = substr($0, 1, i - 1); rest = substr($0, i + 1)
+  j = index(rest, ":"); k = substr(rest, 1, j - 1); v = substr(rest, j + 1); gsub(/^[ \t]+|[ \t]+$/, "", v)
+  if (!(f in seen)) { seen[f] = 1; order[++n] = f }
+  val[f, k] = v }
+END {
+  for (x = 1; x <= n; x++) {
+    f = order[x]
+    if (val[f, "drm-driver"] != "amdgpu" || (pdev != "" && val[f, "drm-pdev"] != pdev)) continue
+    raw = ((f, "drm-memory-vram") in val) ? val[f, "drm-memory-vram"] : val[f, "drm-resident-vram"]
+    if (split(raw, a, " ") < 1 || a[1] !~ /^[0-9]+$/) continue
+    unit = (2 in a) ? a[2] : ""
+    if (unit == "KiB") b = a[1] * 1024; else if (unit == "MiB") b = a[1] * mib; else if (unit == "") b = a[1]; else continue
+    cl = val[f, "drm-client-id"]; key = val[f, "drm-pdev"] "/" cl   # ids are unique per device only
+    if (cl != "" && (key in client)) continue
+    if (cl != "") client[key] = 1
+    np = split(f, p, "/"); pid = p[np - 2]
+    if (!(pid in total)) pids[++m] = pid
+    total[pid] += b }
+  for (x = 1; x <= m; x++) printf "%s %d\n", pids[x], int(total[pids[x]] / mib) }
+AWK
+)
+  fi
+  [[ -z "$unreadable" ]] || echo "$UNREADABLE"
+}
+
+# Every reading is assigned before it is printed, so a failure stops `read` or `stream` with a
+# non-zero exit (errexit does not see a failure inside an echo's arguments).
+case "${1:-}" in
+  read)   v=$(vendor)
+          if [[ $v == nvidia ]]; then out=$(nv_read); else dev=$(amd_dev); out=$(amd_read "$dev"); fi
+          echo "$out" ;;
+  stream) v=$(vendor); dev=""; [[ $v == amd ]] && dev=$(amd_dev)
+          DEADLINE=""
+          while :; do
+            if [[ $v == nvidia ]]; then out=$(nv_line); else out=$(amd_line "$dev"); fi
+            echo "$out"; sleep "$SAMPLE_S"
+          done ;;
+  *) echo "usage: gpu-broker-gpu read|stream" >&2; exit 2 ;;
+esac

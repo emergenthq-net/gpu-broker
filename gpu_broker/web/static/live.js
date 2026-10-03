@@ -11,6 +11,13 @@ const PALETTE = ["#3b5bdb", "#e8590c", "#2b8a3e", "#ae3ec9", "#1098ad", "#f08c00
 const CHART = { pad: 2, line: 1.5, grid: 1, dot: 3, band: 0.25, headroom: 1.1, gridAt: [0.5, 1] };
 const MIN_TPS_MAX = 100, MIN_LATENCY_MAX_S = 10;
 const TOKENS_PER_K = 1000;
+const UNKNOWN = "—";                 // a reading this card does not report (null in the sample)
+const PROCS_HINT = "per-process memory needs root or CAP_SYS_PTRACE";   // gpu.UNREADABLE_HINT
+
+// "<v> <unit>", or UNKNOWN when the card does not report v.
+const reading = (v, unit) => v === null || v === undefined ? UNKNOWN : `${v} ${unit}`;
+// [t, v] points for a chart, leaving out samples where v is unknown.
+const known = (pts, key) => pts.filter(s => s[key] !== null && s[key] !== undefined).map(s => [s.t, s[key]]);
 
 const grpCol = (g, i) => (UI.groups[g] || {}).color || PALETTE[i % PALETTE.length];
 const grpName = g => (UI.groups[g] || {}).label || g;
@@ -54,15 +61,16 @@ function drawGpu() {
   });
   ser.push({ pts: pts.map(s => [s.t, s.used_mib]), color: cssVar("--mute") });
   chart("cVram", ser, { max: last.total_mib, t0, t1 });
-  chart("cUtil", [{ pts: pts.map(s => [s.t, s.util_pct]), color: cssVar("--acc") }], { max: PERCENT, t0, t1 });
-  chart("cPow", [{ pts: pts.map(s => [s.t, s.power_w]), color: cssVar("--power") }], { max: UI.power_max_w, t0, t1 });
-  chart("cTemp", [{ pts: pts.map(s => [s.t, s.temp_c]), color: cssVar("--temp") }], { max: UI.temp_max_c, t0, t1 });
+  chart("cUtil", [{ pts: known(pts, "util_pct"), color: cssVar("--acc") }], { max: PERCENT, t0, t1 });
+  chart("cPow", [{ pts: known(pts, "power_w"), color: cssVar("--power") }], { max: UI.power_max_w, t0, t1 });
+  chart("cTemp", [{ pts: known(pts, "temp_c"), color: cssVar("--temp") }], { max: UI.temp_max_c, t0, t1 });
   $("lVram").innerHTML = `${gb(last.used_mib)} / ${(last.total_mib / MIB_PER_GB).toFixed(0)} GB · ` +
     Object.entries(last.by_group).map(([gr, m]) =>
-      `<span style="color:${esc(grpCol(gr, grps.indexOf(gr)))}">■</span> ${esc(grpName(gr))} ${gb(m)}`).join(" · ");
-  $("lUtil").textContent = `${last.util_pct}% · ${last.sm_mhz} MHz`;
-  $("lPow").textContent = `${last.power_w} W`;
-  $("lTemp").textContent = `${last.temp_c} °C`;
+      `<span style="color:${esc(grpCol(gr, grps.indexOf(gr)))}">■</span> ${esc(grpName(gr))} ${gb(m)}`).join(" · ") +
+    (last.procs_unreadable ? ` · <span class="mute">${PROCS_HINT}</span>` : "");
+  $("lUtil").textContent = `${reading(last.util_pct, "%")} · clock ${reading(last.clock_mhz, "MHz")}`;
+  $("lPow").textContent = reading(last.power_w, "W");
+  $("lTemp").textContent = reading(last.temp_c, "°C");
 }
 
 function drawJobs(m) {

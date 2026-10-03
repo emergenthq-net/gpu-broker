@@ -19,7 +19,7 @@ from typing import Any
 
 from .backends import Backends
 from .catalog import Model
-from .constants import ERR_JOB, JobState
+from .constants import EMBED_KEY, ERR_JOB, JobState
 from .store import Store
 
 DEFAULT_SLOTS = 1
@@ -96,7 +96,8 @@ class LlmPool:
 
     def _call(self, jid: str, model: Model, payload: Mapping[str, Any]) -> None:
         try:
-            self.store.update_job(jid, state=JobState.DONE, result=self.backends.llm_chat(model, payload))
+            call = self.backends.llm_embed if payload.get(EMBED_KEY) else self.backends.llm_chat
+            self.store.update_job(jid, state=JobState.DONE, result=call(model, payload))
         except Exception as e:  # noqa: BLE001 — any failure is reported to the requester, never raised
             self.store.update_job(jid, state=JobState.FAILED, error=str(e)[:ERR_JOB])
         finally:

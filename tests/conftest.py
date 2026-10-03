@@ -20,8 +20,10 @@ def _no_network():
     def boom(req, *a, **k):
         raise AssertionError(f"network call in test: {getattr(req, 'full_url', req)}")
     real, urllib.request.urlopen = urllib.request.urlopen, boom
+    real_open = urllib.request.OpenerDirector.open
+    urllib.request.OpenerDirector.open = lambda self, req, *a, **k: boom(req)  # custom openers too
     yield
-    urllib.request.urlopen = real
+    urllib.request.urlopen, urllib.request.OpenerDirector.open = real, real_open
 
 
 @pytest.fixture(autouse=True, scope="session")

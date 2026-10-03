@@ -10,6 +10,15 @@
 # caps:     capabilities; a request's caps must be a subset for a model to stand in for another
 # quality:  0-100, the highest-quality valid substitute of the same kind wins
 # status:   ready | downloadable | needs_integration
+# inputs:   input files it takes, {image|end_image|frames|video: required|optional|one_of}; a
+#           job sends them as base64 (`frames` is a list) and is refused (400) if they do not fit
+#           (`frames` may be {need, min, max}: how many views the model can use)
+# exec:     runner exec only: {recipe: <name>, timeout_s, params?: [request keys]}; timeout_s must be
+#           at least the recipe's timeout_s + kill grace + reap + 30 s, as the driver reports
+#           them (55 s on the systemd driver; checked at startup); the command
+#           itself is the recipe file on the host (examples/recipes/)
+# defaults: runner comfy only: request-level defaults for this model ({steps: 20}); a request
+#           still overrides them, and only keys its template reads are accepted
 # source:   {hf: org/repo, slug, include?} or {gh: https://github.com/o/r, slug} — for downloads
 defaults:
   resident: llama-3.1-8b      # made resident again once the queue has been idle for idle_restore_s
@@ -59,8 +68,10 @@ models:
     runner: comfy
     template: wan5b      # needs wan2.2_ti2v_5B_fp16, umt5_xxl_fp8_e4m3fn_scaled, wan2.2_vae
     comfy_template: video_wan2_2_5B_ti2v
+    inputs: {image: optional}   # optional start frame (text- or image-to-video)
     vram_mib: 23000
     caps: [t2v]
+    image_caps: [i2v]          # i2v only when the job carries an image
     quality: 70
     status: ready
     source: {hf: Comfy-Org/Wan_2.2_ComfyUI_Repackaged, slug: wan2.2-5b,
@@ -68,3 +79,14 @@ models:
                        "split_files/text_encoders/umt5_xxl_fp8_e4m3fn_scaled.safetensors",
                        "split_files/vae/wan2.2_vae.safetensors"]}
     aliases: [wan5b, wan2.2]
+
+  apple-sharp:
+    kind: 3d
+    runner: exec               # a command-line program, run by a recipe (examples/recipes/sharp.recipe)
+    exec: {recipe: sharp, timeout_s: 660}
+    inputs: {image: required}
+    vram_mib: 12000
+    caps: [image_to_splat]
+    quality: 80
+    status: ready
+    source: {hf: apple/Sharp, slug: apple-sharp, include: ["sharp_2572gikvuh.pt"]}

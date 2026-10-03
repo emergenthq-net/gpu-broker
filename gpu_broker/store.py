@@ -1,10 +1,7 @@
-"""Jobs, events and downloads. SQLite is the source of truth; events are also appended to a
-JSONL file for log shippers.
-
-One connection is shared by every thread (`check_same_thread=False`), so every statement —
-reads included — runs under one lock: sqlite3 connection objects are not safe for
-interleaved use.
-"""
+"""Jobs, events, downloads and flags. SQLite is the source of truth; events are also appended
+to a JSONL file for log shippers. One connection is shared by every thread, so every
+statement — reads included — runs under one lock: a sqlite3 connection is not safe for
+interleaved use."""
 from __future__ import annotations
 
 import json
@@ -15,6 +12,7 @@ import time
 import uuid
 from typing import Any
 
+from . import schema
 from .constants import (
     ACTIVE_DOWNLOADS,
     DOWNLOAD_EVENT_PREFIX,
@@ -29,17 +27,6 @@ from .constants import (
 
 Row = dict[str, Any]
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS jobs (
-  id TEXT PRIMARY KEY, created REAL, updated REAL, requester TEXT,
-  requested TEXT, resolved TEXT, substitution TEXT, state TEXT,
-  payload TEXT, result TEXT, error TEXT, download TEXT);
-CREATE TABLE IF NOT EXISTS events (
-  seq INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, job_id TEXT, kind TEXT, data TEXT);
-CREATE TABLE IF NOT EXISTS downloads (
-  slug TEXT PRIMARY KEY, kind TEXT, ref TEXT, state TEXT, created REAL, updated REAL,
-  catalog_key TEXT, error TEXT);
-"""
 JOB_ID_HEX = 12
 JSON_COLUMNS = ("payload", "result", "download")
 UPDATABLE = frozenset({"resolved", "substitution", "state", "result", "error", "download"})
@@ -55,6 +42,10 @@ def _in(values: tuple[str, ...] | frozenset[str]) -> str:
     return ",".join("?" * len(values))
 
 
+def _decode(row: Row) -> Row:
+    return {k: json.loads(v) if k in JSON_COLUMNS and v else v for k, v in row.items()}
+
+
 class Store:
     def __init__(self, db_path: str, jsonl_path: str | None = None) -> None:
         for path in (db_path, jsonl_path):
@@ -62,9 +53,11 @@ class Store:
                 os.makedirs(os.path.dirname(path), exist_ok=True)
         self._db = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
         self._db.row_factory = sqlite3.Row
-        self._db.executescript(SCHEMA)
+        schema.migrate(self._db)
         self._lock = threading.Lock()
         self._jsonl = jsonl_path or None
+        # Notified after every job update (callers wait without polling); taken only after `_lock` is released.
+        self.job_changed = threading.Condition()
 
     def _all(self, sql: str, args: tuple[Any, ...] = ()) -> list[Row]:
         with self._lock:
@@ -93,10 +86,10 @@ class Store:
         return [{**r, "data": json.loads(r["data"])} for r in rows]
 
     # ---- jobs -----------------------------------------------------------
-    def create_job(self, requester: str, requested: str, payload: dict[str, Any]) -> str:
+    def create_job(self, requester: str, requested: str, payload: dict[str, Any], exec_recipe: str = schema.NOT_EXEC) -> str:
         jid, now = uuid.uuid4().hex[:JOB_ID_HEX], time.time()
-        self._exec("INSERT INTO jobs(id,created,updated,requester,requested,state,payload) VALUES (?,?,?,?,?,?,?)",
-                   (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload)))
+        self._exec("INSERT INTO jobs(id,created,updated,requester,requested,state,payload,exec_recipe) VALUES (?,?,?,?,?,?,?,?)",
+                   (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload), exec_recipe))
         self.event(JOB_EVENT_PREFIX + JobState.RECEIVED, jid, requester=requester, requested=requested)
         return jid
 
@@ -111,12 +104,14 @@ class Store:
         self._exec(f"UPDATE jobs SET {sets} WHERE id=?", (*cols.values(), jid))  # noqa: S608 — column names from UPDATABLE
         if "state" in fields:
             self.event(JOB_EVENT_PREFIX + fields["state"], jid, **{k: fields[k] for k in EVENT_FIELDS if k in fields})
+        self._changed()
+
+    def _changed(self) -> None:
+        with self.job_changed:
+            self.job_changed.notify_all()
 
     def job(self, jid: str) -> Row | None:
-        rows = self._all("SELECT * FROM jobs WHERE id=?", (jid,))
-        if not rows:
-            return None
-        return {k: json.loads(v) if k in JSON_COLUMNS and v else v for k, v in rows[0].items()}
+        return next(map(_decode, self._all("SELECT * FROM jobs WHERE id=?", (jid,))), None)
 
     def jobs(self, limit: int) -> list[Row]:
         return self._all("SELECT id,created,updated,requester,requested,resolved,substitution,state,error "
@@ -136,13 +131,16 @@ class Store:
             out.setdefault(r["job_id"], {})[r["kind"].removeprefix(JOB_EVENT_PREFIX)] = r["ts"]
         return out
 
-    def fail_orphans(self) -> int:
-        """At startup nothing is in flight: any non-terminal job was lost with the old process."""
-        n = self._exec(f"UPDATE jobs SET state=?, error=?, updated=? WHERE state NOT IN ({_in(TERMINAL)})",  # noqa: S608
+    def fail_orphans(self) -> list[Row]:
+        """At startup nothing is in flight: fail every non-terminal job; returns them as they were,
+        with `direct` (a direct chat)."""
+        lost = list(map(_decode, self._all(schema.ORPHANS + f"({_in(TERMINAL)})", (Event.JOB_DIRECT, *TERMINAL))))
+        if lost:
+            self._exec(f"UPDATE jobs SET state=?, error=?, updated=? WHERE state NOT IN ({_in(TERMINAL)})",  # noqa: S608
                        (JobState.FAILED, ORPHANED, time.time(), *TERMINAL))
-        if n:
-            self.event(Event.ORPHANS_FAILED, count=n)
-        return n
+            self.event(Event.ORPHANS_FAILED, count=len(lost))
+            self._changed()
+        return lost
 
     def stats(self, since_ts: float) -> Row:
         """Per-model outcome counts and latency, plus residency/error event counts."""
@@ -157,6 +155,15 @@ class Store:
             models.setdefault(r["model"], {})[r["state"]] = {
                 "n": r["n"], "avg_s": round(r["avg_s"] or 0, DECIMALS), "max_s": round(r["max_s"] or 0, DECIMALS)}
         return {"since": since_ts, "models": models, "events": {r["kind"]: r["n"] for r in ev}}
+
+    # ---- flags: state that must survive a restart (holds.py); None clears one
+    def flag(self, name: str) -> Row | None:
+        rows = self._all("SELECT ts, data FROM flags WHERE name=?", (name,))
+        return {"since": rows[0]["ts"], **json.loads(rows[0]["data"])} if rows else None
+
+    def set_flag(self, name: str, data: dict[str, Any] | None) -> None:
+        self._exec(*(("DELETE FROM flags WHERE name=?", (name,)) if data is None else
+                     ("INSERT OR REPLACE INTO flags(name,ts,data) VALUES (?,?,?)", (name, time.time(), json.dumps(data)))))
 
     # ---- downloads ------------------------------------------------------
     def upsert_download(self, slug: str, kind: str, ref: str, catalog_key: str | None) -> bool:
@@ -179,5 +186,4 @@ class Store:
         return self._all("SELECT * FROM downloads ORDER BY created DESC LIMIT ?", (limit,))
 
     def download(self, slug: str) -> Row | None:
-        rows = self._all("SELECT * FROM downloads WHERE slug=?", (slug,))
-        return rows[0] if rows else None
+        return next(iter(self._all("SELECT * FROM downloads WHERE slug=?", (slug,))), None)

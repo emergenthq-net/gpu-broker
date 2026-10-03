@@ -5,6 +5,7 @@
 
 // ---- constants -------------------------------------------------------------
 const TOKEN_KEY = "gpu-broker-token";        // localStorage key
+const TOKEN_FRAGMENT = "#token=";            // a link's way to hand the page a token
 const STATUS_EVERY_MS = 5000;                // status/stats/events refresh
 const EVENTS_SHOWN = 60;                     // rows in the event table (and initial backlog)
 const EVENTS_PAGE = 500;
@@ -18,12 +19,28 @@ const DONE = "done", BAD_STATES = ["failed", "rejected"], TERMINAL = [DONE, ...B
 const UI_DEFAULTS = { gpu_label: "GPU", resident_label: "the default model", groups: {}, comfy_url: "",
                       power_max_w: 450, temp_max_c: 90 };
 const API = { status: "/v1/status", gpu: "/v1/gpu", stats: "/v1/stats", events: "/v1/events", ui: "/v1/ui",
-              metrics: "/v1/metrics", catalog: "/v1/catalog", jobs: "/v1/jobs/", sessions: "/v1/sessions",
+              metrics: "/v1/metrics", catalog: "/v1/catalog", jobs: "/v1/jobs/", submit: "/v1/jobs", sessions: "/v1/sessions",
               sessionEnd: "/v1/sessions/end" };
 
 // ---- helpers ---------------------------------------------------------------
 let tok = "";
 try { tok = localStorage.getItem(TOKEN_KEY) || ""; } catch (e) { /* storage disabled */ }
+// A link may carry the token as `#token=...` (`gpu-broker demo` prints one). A fragment never
+// reaches the server and is removed from the address bar at once. Its token is used for this page
+// but saved (replacing the saved one) only once the broker has accepted it: a wrong or stray link
+// must not overwrite a working token. An empty or undecodable one is ignored.
+let linkTok = false;
+if (location.hash.startsWith(TOKEN_FRAGMENT)) {
+  let t = "";
+  try { t = decodeURIComponent(location.hash.slice(TOKEN_FRAGMENT.length)); } catch (e) { /* malformed: ignored */ }
+  if (t) { tok = t; linkTok = true; }
+  history.replaceState(null, "", location.pathname + location.search);
+}
+function keepLinkToken() {
+  if (!linkTok) return;
+  linkTok = false;
+  try { localStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* storage disabled: kept for this page only */ }
+}
 const $ = id => document.getElementById(id);
 const esc = s => String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const now = () => Date.now() / MS_PER_S;
@@ -38,6 +55,7 @@ const authHeaders = (extra = {}) => ({ Authorization: "Bearer " + tok, ...extra 
 async function get(path) {
   const r = await fetch(path, { headers: authHeaders() });
   if (r.status === 401) { $("tok").style.display = "flex"; throw new Error("token"); }
+  if (r.ok) keepLinkToken();
   return r.json();
 }
 
@@ -49,6 +67,10 @@ async function post(path, body) {
 
 // Click handling: elements carry data-action; handlers register here (no inline JS, strict CSP).
 const ACTIONS = {};
+// New broker events, once per status refresh: scripts react here instead of running timers.
+const EVENT_HOOKS = [];
+// Called after the user saves a token (requests that failed for want of one can be retried).
+const TOKEN_HOOKS = [];
 document.addEventListener("click", e => {
   const el = e.target.closest("[data-action]");
   if (el && ACTIONS[el.dataset.action]) ACTIONS[el.dataset.action](el.dataset);
@@ -62,9 +84,9 @@ async function loadUi() {
 }
 
 ACTIONS["save-token"] = () => {
-  tok = $("t").value.trim();
+  tok = $("t").value.trim(); linkTok = false;
   try { localStorage.setItem(TOKEN_KEY, tok); } catch (e) { /* storage disabled */ }
-  $("tok").style.display = "none"; loadUi(); tick();
+  $("tok").style.display = "none"; loadUi(); tick(); TOKEN_HOOKS.forEach(h => h());
 };
 
 // ---- status ----------------------------------------------------------------
@@ -73,11 +95,16 @@ const empty = (id, text) => `<tr><td colspan=${$(id).closest("table").tHead.rows
 let lastSeq = -EVENTS_SHOWN, evRows = [];
 
 function drawStatus(st, gpu) {
+  const h = st.gpu_held;   // a recipe may still hold the GPU: no job runs until this clears
+  $("held").hidden = !h;
+  if (h) $("held").textContent = `GPU held for ${ago(h.since)} by job ${h.job} (recipe ${h.recipe}): ${h.reason}. ` +
+    "Retrying its clean; once its processes are confirmed gone, POST /v1/admin/gpu-held/clear.";
   if (gpu.used_mib != null) {
     $("vram").textContent = `${gb(gpu.used_mib)} / ${(gpu.total_mib / MIB_PER_GB).toFixed(0)} GB`;
     $("vbar").style.width = (PERCENT * gpu.used_mib / gpu.total_mib).toFixed(0) + "%";
-    $("util").textContent = "util " + gpu.util_pct + "%";
-  } else $("util").textContent = gpu.error || "";
+    $("util").textContent = (gpu.util_pct == null ? "util unknown" : "util " + gpu.util_pct + "%") +
+      (gpu.probe ? " · " + gpu.probe : "");
+  } else $("util").textContent = gpu.error || (gpu.state === "probing" ? "finding the GPU…" : "");
   $("res").textContent = st.resident_llm || "none";
   $("comfy").textContent = st.last_comfy ? "ComfyUI last ran " + st.last_comfy : "";
   const r = st.running, n = (st.inflight || []).length;
@@ -116,7 +143,7 @@ async function tick() {
   try {
     const [st, gpu, sx, ev] = await Promise.all([get(API.status), get(API.gpu), get(API.stats),
                                                  get(`${API.events}?since=${lastSeq}&limit=${EVENTS_PAGE}`)]);
-    drawStatus(st, gpu); drawStats(sx); drawEvents(ev);
+    drawStatus(st, gpu); drawStats(sx); drawEvents(ev); EVENT_HOOKS.forEach(h => h(ev));
     $("upd").textContent = "updated " + new Date().toLocaleTimeString();
   } catch (e) { $("upd").textContent = e.message === "token" ? "token needed" : "error: " + e.message; }
 }

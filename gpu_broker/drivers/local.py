@@ -1,42 +1,40 @@
 """Drivers for model servers on the machine the broker runs on: systemd units or Docker
-containers. They share GPU reading (nvidia-smi) and model-file handling, and differ only in
-how a unit is started and stopped.
+containers. They share GPU reading (a gpu_broker.gpu probe: nvidia-smi or amdgpu sysfs) and
+model-file handling, and differ only in how a unit is started and stopped.
 
 Per-process VRAM is grouped by what owns the process — the systemd unit or Docker container
 found in /proc/<pid>/cgroup, else "host". Inside a container without the host PID namespace
-nvidia-smi lists no processes, and the dashboard then shows the total only.
+the probe sees no other processes, and the dashboard then shows the total only.
 """
 from __future__ import annotations
 
+import contextlib
 import os
 import pathlib
 import re
+import shutil
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from typing import Any
 
+from .. import gpu as gpu_probe
 from ..constants import DownloadKind, Verb
-from ..settings import Timeouts
-from . import Run, check, run, validate
+from ..gpu import amd, auto, nvidia
+from ..gpu.auto import ProbeState
+from ..settings import Gpu, Timeouts
+from . import KILL_AFTER_S, PIPE_DRAIN_S, REAP_WAIT_S, Input, RecipeInfo, Run, check, reap, recipes, run, run_group, validate
 
-GPU_QUERY = "memory.used,memory.total,utilization.gpu"
-STREAM_QUERY = GPU_QUERY + ",power.draw,temperature.gpu,clocks.sm"
-APPS_QUERY = "pid,used_memory"
-CSV = "--format=csv,noheader,nounits"
 HOST_GROUP = "host"
 DOCKER_CGROUP = re.compile(r"docker[-/]([0-9a-f]{12})")
 SYSTEMD_CGROUP = re.compile(r"/([^/\s]+)\.service")
 ACTIVE, RUNNING = "active", "true"   # `systemctl is-active` / `docker inspect .State.Running` output
 GIT_DIR = ".git"
-NVIDIA_SMI, HF, GIT, DOCKER = "nvidia-smi", "hf", "git", "docker"   # executables, overridable per driver
+NVIDIA_SMI, HF, GIT, DOCKER = nvidia.NVIDIA_SMI, "hf", "git", "docker"   # executables, overridable per driver
 SYSTEMD_MODELS_ROOT = "/var/lib/gpu-broker/models"
 DOCKER_MODELS_ROOT = "/models"
-
-
-def _fields(csv: str) -> list[str]:
-    return [x.strip() for x in csv.strip().splitlines()[0].split(",")]
+RECIPES_DIR = "/etc/gpu-broker/recipes"
 
 
 def group_of(pid: str, proc: str = "/proc") -> str:
@@ -52,19 +50,27 @@ def group_of(pid: str, proc: str = "/proc") -> str:
     return HOST_GROUP
 
 
+NO_EXEC = "the docker driver cannot run exec recipes (use the systemd or proxmox driver)"
+
 class LocalDriver:
-    """GPU via nvidia-smi and files under `models_root`; subclasses implement `unit`.
-    `run`, `group` and `sleep` are injectable so tests never execute anything."""
+    """GPU via a probe (settings `gpu`) and files under `models_root`; subclasses implement
+    `unit`. `run`, `group`, `sleep` and the sysfs/proc roots are injectable so tests never
+    execute or read anything real."""
 
     def __init__(self, allowed: frozenset[str] | None, timeouts: Timeouts, sample_s: float,
                  models_root: str, comfy_models_dir: str | None = None, nvidia_smi: str = NVIDIA_SMI,
-                 hf: str = HF, git: str = GIT, run: Run = run, group: Callable[[str], str] = group_of,
-                 sleep: Callable[[float], None] = time.sleep) -> None:
+                 hf: str = HF, git: str = GIT, run: Run = run, group: Callable[[str], str] | None = None,
+                 sleep: Callable[[float], None] = time.sleep, recipes_dir: str = RECIPES_DIR,
+                 run_recipe_cmd: Run = run_group, gpu: Gpu | None = None,
+                 sys_root: str = amd.SYS_ROOT, proc_root: str = amd.PROC_ROOT) -> None:
         self.allowed, self.t, self.sample_s = allowed, timeouts, sample_s
         self.root, self.comfy_dir = models_root, comfy_models_dir
         self.smi, self.hf, self.git = nvidia_smi, hf, git
-        self.run, self.group, self.sleep = run, group, sleep
+        self.run, self.sleep = run, sleep
+        self.group = group or (lambda pid: group_of(pid, proc_root))
+        self.recipes_dir, self.run_recipe_cmd = recipes_dir, run_recipe_cmd
         self._closed = threading.Event()
+        self.probe = auto.local(gpu or Gpu(), self.run, self.t.gpu_query_s, self.smi, sys_root, proc_root, sleep)
 
     def unit(self, spec: Any, verb: Verb) -> bool:
         raise NotImplementedError
@@ -76,21 +82,19 @@ class LocalDriver:
         return u.name
 
     # ---- GPU ------------------------------------------------------------
-    def _smi(self, query: str) -> str:
-        return self.run([self.smi, query, CSV], timeout=self.t.gpu_query_s).stdout
+    def gpu_probe(self) -> str:
+        return self.probe.name
 
-    def gpu(self) -> tuple[int, int, int]:
-        used, total, util = (int(float(x)) for x in _fields(self._smi(f"--query-gpu={GPU_QUERY}")))
-        return used, total, util
+    def gpu_state(self) -> ProbeState:
+        return self.probe.state()
+
+    def gpu(self) -> tuple[int, int, int | None]:
+        s = self.probe.read()
+        return s.used_mib, s.total_mib, s.util_pct
 
     def sample_line(self) -> str:
-        head = ",".join(_fields(self._smi(f"--query-gpu={STREAM_QUERY}")))
-        procs = []
-        for row in self._smi(f"--query-compute-apps={APPS_QUERY}").splitlines():
-            pid, _, mib = row.replace(" ", "").partition(",")
-            if pid.isdigit() and mib.isdigit():
-                procs.append(f"{self.group(pid)}:{mib}")
-        return f"{head}|{' '.join(procs)}"
+        p = self.probe.procs()
+        return gpu_probe.line(self.probe.read(), [(self.group(pid), mib) for pid, mib in p.rows], p.unreadable)
 
     def gpu_stream(self) -> Iterator[str]:
         while not self._closed.is_set():
@@ -125,6 +129,31 @@ class LocalDriver:
         os.symlink(src, dst)
         return subprocess.CompletedProcess(["symlink", src, dst], 0, "", "")
 
+    # ---- exec recipes ---------------------------------------------------
+    def _recipe(self, recipe: str) -> recipes.Recipe:
+        r = recipes.load(self.recipes_dir, recipe)
+        if r.target is not None:
+            raise ValueError(f"recipe {recipe}: `target` is for the proxmox driver; this one runs on this machine")
+        return r
+
+    def recipe_info(self, recipe: str) -> RecipeInfo:
+        return RecipeInfo(self._recipe(recipe).timeout_s, KILL_AFTER_S, PIPE_DRAIN_S + REAP_WAIT_S, REAP_WAIT_S)
+
+    def clean_recipe(self, recipe: str, jid: str) -> None:
+        """Reap first: that needs only the job id. The recipe is read just to find the inputs
+        folder, so a recipe that no longer loads leaves the folder but does not keep the hold."""
+        validate.recipe_call(recipe, jid, [])
+        if not reap.reap(jid, REAP_WAIT_S):
+            raise RuntimeError(f"processes of job {jid} still run (or the scan cannot tell)")
+        with contextlib.suppress(OSError, ValueError):
+            shutil.rmtree(self._recipe(recipe).dirs(jid)[0], ignore_errors=True)
+
+    def run_recipe(self, recipe: str, jid: str, files: Sequence[tuple[str, Input]], timeout_s: float) -> list[str]:
+        """Runs under the recipe's own timeout_s (the catalog's, checked to be longer, bounds the
+        job); the process group is gone when this returns, so a timeout is an ordinary failure."""
+        validate.recipe_call(recipe, jid, [n for n, _ in files])
+        return recipes.run_local(self._recipe(recipe), jid, files, self.run_recipe_cmd)
+
 
 class SystemdDriver(LocalDriver):
     """Units started with systemctl. Needs root, `sudo: true` with a sudoers rule limited to
@@ -156,4 +185,13 @@ class DockerDriver(LocalDriver):
         argv = ([self.docker, "start", "--", name] if verb == Verb.START else
                 [self.docker, "stop", "-t", str(self.t.container_stop_s), "--", name])
         return self.run(argv, timeout=self.t.unit_s).returncode == 0
+
+    def recipe_info(self, recipe: str) -> RecipeInfo:
+        raise RuntimeError(NO_EXEC)
+
+    def clean_recipe(self, recipe: str, jid: str) -> None:
+        raise RuntimeError(NO_EXEC)
+
+    def run_recipe(self, recipe: str, jid: str, files: Sequence[tuple[str, Input]], timeout_s: float) -> list[str]:
+        raise RuntimeError(NO_EXEC)
 

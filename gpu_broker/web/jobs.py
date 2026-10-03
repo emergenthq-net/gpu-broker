@@ -4,7 +4,7 @@
     GET  /v1/jobs/{id}         state, what is being used, outputs
     GET  /v1/status            residency, queue, downloads, recent jobs
     GET  /v1/events?since=N    event log
-    GET  /v1/models            OpenAI-style list of ready LLMs
+    GET  /v1/models            ready LLMs: OpenAI's list shape, Anthropic's with an anthropic-version header
     GET  /v1/catalog           the catalog's models (dashboard)
 """
 from __future__ import annotations
@@ -15,7 +15,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 
 from ..broker import Broker
+from ..constants import ANTHROPIC_VERSION_HEADER
 from ..store import Row
+from .anthropic_resp import models as anthropic_models
 from .openai import model_list
 
 UNKNOWN_CLIENT = "unknown"
@@ -50,7 +52,7 @@ def router(broker: Broker) -> APIRouter:
     def status() -> dict[str, Any]:
         queued, running, inflight = broker.scheduler.snapshot()
         current = running if running and running not in inflight else (inflight[0] if inflight else None)
-        return {"resident_llm": broker.residency.current, "last_comfy": broker.residency.last_comfy,
+        return {"gpu_held": broker.scheduler.hold.get(), "resident_llm": broker.residency.current, "last_comfy": broker.residency.last_comfy,
                 "session": broker.sessions.view(), "running": current and broker.view(current),
                 "inflight": [broker.view(j) for j in inflight], "queue": [broker.view(j) for j in queued],
                 "downloads": broker.store.downloads(limits.status_downloads), "recent": broker.store.jobs(limits.status_recent)}
@@ -60,7 +62,9 @@ def router(broker: Broker) -> APIRouter:
         return broker.store.events(since, min(limit, limits.events_page))
 
     @r.get("/v1/models")
-    def models() -> dict[str, Any]:
+    def models(request: Request) -> dict[str, Any]:
+        if ANTHROPIC_VERSION_HEADER in request.headers:
+            return anthropic_models(broker.catalog)
         return model_list(broker.catalog)
 
     @r.get("/v1/catalog")

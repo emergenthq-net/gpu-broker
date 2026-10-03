@@ -1,0 +1,59 @@
+# gpu-broker + ComfyUI + llama.cpp sharing one AMD GPU (ROCm). Same setup steps as compose.yaml,
+# plus `gpu: {vendor: amd}` in conf/config.yaml (auto also finds the card):
+#
+#   mkdir -p conf data models && cp config.yaml ../catalog.yaml conf/
+#   printf 'gpu:\n  vendor: amd\n' >> conf/config.yaml
+#   sudo chown -R 10001:10001 conf data
+#   echo "BROKER_TOKEN=$(openssl rand -hex 24)" > .env
+#   echo "DOCKER_GID=$(getent group docker | cut -d: -f3)" >> .env
+#   echo "VIDEO_GID=$(getent group video | cut -d: -f3)" >> .env
+#   echo "RENDER_GID=$(getent group render | cut -d: -f3)" >> .env
+#   docker compose -f compose.rocm.yaml up -d
+#
+# The broker needs no GPU device and no ROCm: it reads the card from the amdgpu driver's sysfs
+# files (/sys, mounted read-only here). The model servers get /dev/kfd and /dev/dri. A Vulkan
+# llama.cpp (image tag server-vulkan, /dev/dri only) works the same way.
+services:
+  gpu-broker:
+    build: ../..
+    image: gpu-broker:latest
+    network_mode: host
+    environment:
+      BROKER_TOKEN: ${BROKER_TOKEN:?set BROKER_TOKEN in .env}
+      BROKER_GPU_VENDOR: amd
+    command: ["serve"]
+    group_add: ["${DOCKER_GID:-999}"]
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - /sys:/sys:ro                    # amdgpu sysfs: VRAM, utilisation, power, temperature, clock
+      - ./conf:/etc/gpu-broker
+      - ./data:/var/lib/gpu-broker
+      - ./models:/models
+      - comfy-models:/comfy-models
+    restart: unless-stopped
+
+  llama-server:
+    container_name: llama-server
+    image: ghcr.io/ggml-org/llama.cpp:server-rocm
+    network_mode: host
+    command: ["-m", "/models/llama-3.1-8b/Meta-Llama-3.1-8B-Instruct-Q4_K_M.gguf", "--alias", "llama-3.1-8b-instruct",
+              "--host", "127.0.0.1", "--port", "8080", "-ngl", "99", "-np", "4", "-c", "32768"]
+    devices: [/dev/kfd, /dev/dri]
+    group_add: ["${VIDEO_GID:-44}", "${RENDER_GID:-993}"]   # video, render: who may open the GPU
+    volumes: ["./models:/models:ro"]
+    restart: "no"                       # the broker decides when it runs
+
+  comfyui:
+    container_name: comfyui
+    image: ${COMFYUI_IMAGE:-yanwk/comfyui-boot:rocm}   # ComfyUI on ROCm PyTorch
+    network_mode: host
+    devices: [/dev/kfd, /dev/dri]
+    group_add: ["${VIDEO_GID:-44}", "${RENDER_GID:-993}"]
+    security_opt: ["seccomp=unconfined"]   # ROCm's recommended container setting
+    volumes:
+      - comfy-models:/root/ComfyUI/models
+      - ./models:/models:ro
+    restart: unless-stopped
+
+volumes:
+  comfy-models:

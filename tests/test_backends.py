@@ -113,3 +113,29 @@ def test_stream_relays_lines_and_keeps_usage_and_timings(http):
     assert len(lines) == 5 and lines[-1] == "data: [DONE]\n"
     assert summary == {"usage": {"total_tokens": 3}, "timings": {"predicted_n": 1}}
     assert json.loads(seen[0].data) == {"messages": [], "model": "served", "stream": True}   # broker fields stripped
+
+
+def test_comfy_upload_posts_multipart_into_the_input_folder(http):
+    seen, routes = http
+    routes["/upload/image"] = {"name": "broker-j1-image.png", "subfolder": "", "type": "input"}
+    assert backends().comfy_upload("broker-j1-image.png", b"\x89PNG-data", "png") == "broker-j1-image.png"
+    req = seen[-1]
+    assert req.full_url == "http://comfy:8188/upload/image" and req.get_method() == "POST"
+    boundary = req.get_header("Content-type").split("boundary=")[1]
+    body = req.data
+    assert body.endswith(f"--{boundary}--\r\n".encode())
+    assert b'name="type"\r\n\r\ninput\r\n' in body and b'name="overwrite"\r\n\r\ntrue\r\n' in body
+    assert (b'name="image"; filename="broker-j1-image.png"\r\nContent-Type: image/png\r\n\r\n\x89PNG-data\r\n'
+            in body)
+
+
+def test_comfy_upload_returns_the_subfolder_path_and_reports_rejections(http):
+    _, routes = http
+    routes["/upload/image"] = {"name": "x.png", "subfolder": "in", "type": "input"}
+    assert backends().comfy_upload("x.png", b"d", "webp") == "in/x.png"
+
+    def reject(req):
+        raise urllib.error.HTTPError(req.full_url, 400, "bad", {}, io.BytesIO(b"Invalid image file"))
+    routes["/upload/image"] = reject
+    with pytest.raises(RuntimeError, match="rejected the input image: Invalid image file"):
+        backends().comfy_upload("x.png", b"d", "png")

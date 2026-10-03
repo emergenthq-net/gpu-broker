@@ -9,6 +9,7 @@ from gpu_broker.constants import Verb
 from gpu_broker.drivers.local import DockerDriver, SystemdDriver, group_of
 from gpu_broker.drivers.proxmox import ProxmoxDriver
 from gpu_broker.units import unit_ref
+from tests.helpers import FIX
 
 T = settings.Timeouts()
 CAT_UNITS = [unit_ref("llm-a"), unit_ref({"name": "llm-b"})]
@@ -17,11 +18,13 @@ CAT_UNITS = [unit_ref("llm-a"), unit_ref({"name": "llm-b"})]
 class Rec:
     """Stands in for drivers.run: records argv, answers from {substring of argv: stdout}."""
 
-    def __init__(self, out=None, rc=0):
-        self.calls, self.out, self.rc = [], out or {}, rc
+    def __init__(self, out=None, rc=0, missing=()):
+        self.calls, self.out, self.rc, self.missing = [], out or {}, rc, missing
 
     def __call__(self, cmd, timeout):
         self.calls.append(cmd)
+        if cmd[0] in self.missing:
+            raise FileNotFoundError(cmd[0])
         key = next((k for k in self.out if k in " ".join(cmd)), None)
         return subprocess.CompletedProcess(cmd, self.rc, self.out.get(key, ""), "")
 
@@ -80,6 +83,21 @@ def test_local_gpu_parsing_and_sample_line(tmp_path):
     d = local(SystemdDriver, tmp_path, rec, group=lambda pid: "unit-" + pid)
     assert d.gpu() == (8000, 24564, 37)
     assert next(d.gpu_stream()) == "8000,24564,37,120.5,50,2500|unit-123:7000"
+    assert d.gpu_probe() == "nvidia (nvidia-smi, card 0)" and rec.calls[0] == ["nvidia-smi", "-L"]
+
+
+def test_local_drivers_read_an_amd_card_when_nvidia_smi_is_not_installed(tmp_path):
+    amd = FIX / "amdgpu/rdna3"
+    d = local(DockerDriver, tmp_path, Rec(missing={"nvidia-smi"}), sys_root=str(amd / "sys"), proc_root=str(amd / "proc"))
+    assert d.gpu() == (8192, 24576, 99) and d.gpu_probe().startswith("amd (amdgpu sysfs, card0")
+    assert d.sample_line() == "8192,24576,99,287.0,64,|llama-server:6144 comfyui:1024"   # groups from the fixture's cgroups
+
+
+def test_build_passes_the_gpu_section_to_local_drivers():
+    c = dataclasses.replace(cfg("systemd"), gpu=settings.Gpu("amd", 2))
+    with pytest.raises(RuntimeError, match=r"gpu\.index 2: 0 amdgpu card"):
+        drivers.build(dataclasses.replace(c, driver=settings.Driver("systemd", None, {"sys_root": "/nonexistent"})),
+                      CAT_UNITS).gpu_probe()
 
 
 def test_group_of_reads_the_cgroup(tmp_path):
@@ -137,7 +155,7 @@ def test_proxmox_argv_and_stream():
     d = ProxmoxDriver("root@pve", frozenset({"7:llm"}), T, run=rec, popen=lambda *a, **k: Proc())
     assert d.unit({"name": "llm", "target": 7}, Verb.IS_ACTIVE) is True
     assert rec.calls[0][-6:] == ["--", "root@pve", "unit", "7", "llm", "is-active"]
-    assert d.gpu() == (1, 2, 3)
+    assert d.gpu() == (1, 2, 3) and "host/gpu-broker-gpu" in d.gpu_probe()
     stream = d.gpu_stream()
     assert [next(stream), next(stream)] == ["a\n", "b\n"]
     with pytest.raises(RuntimeError, match="gone"):

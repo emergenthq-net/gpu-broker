@@ -14,13 +14,16 @@ from typing import Any
 from gpu_broker import settings as settings_mod
 from gpu_broker.broker import Broker
 from gpu_broker.constants import TERMINAL, Verb
+from gpu_broker.drivers import RecipeInfo
+from gpu_broker.gpu.auto import ProbeState
 from gpu_broker.units import unit_ref
 
 FIX = pathlib.Path(__file__).parent / "fixtures"
 ROOT = pathlib.Path(__file__).parents[1]
 TOKEN = "test-token"
+COMFY_OUTPUT = "/srv/comfy/output"   # ComfyUI's output folder in test settings
 FAST = settings_mod.Intervals(worker_poll_s=0.02, paused_s=0.01, health_poll_s=0.001, comfy_poll_s=0.001,
-                              session_poll_s=0.001, job_wait_poll_s=0.01, gpu_sample_s=0.001, sampler_retry_s=0.01,
+                              session_poll_s=0.001, gpu_sample_s=0.001, sampler_retry_s=0.01,
                               gpu_cache_s=0)
 WAIT_S = 5
 
@@ -34,6 +37,15 @@ class FakeDriver:
         self.downloads: list[tuple[str, str, str]] = []
         self.allowed = None
         self.fail_start: set[str] = set()
+        self.recipes: list[tuple[str, str, list[tuple[str, bytes]], float]] = []
+        self.recipe_error: str | None = None
+        self.recipe_outputs = ["{root}/broker/{jid}/scene.ply"]
+        self.recipe_seconds = 600.0             # every recipe's own timeout_s
+        self.vram = (8000, 24564)               # (used, total) MiB, as gpu() reports them
+        self.streamed: list[str] = []           # inputs handed over as open files, by name
+        self.cleans: list[tuple[str, str]] = []
+        self.clean_error: str | None = None
+        self.no_gpu, self.probe_name = False, "fake"   # no_gpu: GPU reads raise, as with no GPU
 
     def unit(self, spec: Any, verb: Verb) -> bool:
         name = unit_ref(spec).name
@@ -45,10 +57,28 @@ class FakeDriver:
         (self.active.add if verb == Verb.START else self.active.discard)(name)
         return True
 
-    def gpu(self) -> tuple[int, int, int]:
-        return 8000, 24564, 37
+    def gpu_probe(self) -> str:
+        if self.no_gpu:
+            raise RuntimeError("no GPU found")
+        return self.probe_name
+
+    def gpu_state(self) -> ProbeState:
+        return ProbeState("failed", "no GPU found") if self.no_gpu else ProbeState("ready", self.probe_name)
+
+    def gpu(self) -> tuple[int, int, int | None]:
+        self.gpu_probe()   # raises without a GPU
+        return *self.vram, 37
+
+    def recipe_info(self, recipe) -> RecipeInfo:
+        return RecipeInfo(self.recipe_seconds, 10, 15, 10)
+
+    def clean_recipe(self, recipe, jid) -> None:
+        self.cleans.append((recipe, jid))
+        if self.clean_error:
+            raise RuntimeError(self.clean_error)
 
     def gpu_stream(self):
+        self.gpu_probe()
         yield "8000,24564,37,120.5,50,2500|llama-8b:7000"
 
     def close(self) -> None:
@@ -61,24 +91,38 @@ class FakeDriver:
     def link(self, rel, subdir):
         return subprocess.CompletedProcess([], 0, "", "")
 
+    def run_recipe(self, recipe, jid, files, timeout_s):
+        read = []
+        for name, data in files:   # open files are only valid during the call: read them now
+            if not isinstance(data, bytes):
+                self.streamed.append(name)
+            read.append((name, data if isinstance(data, bytes) else data.read()))
+        self.recipes.append((recipe, jid, read, timeout_s))
+        if self.recipe_error:
+            raise RuntimeError(self.recipe_error)
+        return [o.format(root=COMFY_OUTPUT, jid=jid) for o in self.recipe_outputs]
+
 
 class FakeBackends:
     """An LLM is healthy when its unit is active; ComfyUI is alive unless told otherwise."""
 
     def __init__(self, driver: FakeDriver) -> None:
         self.driver = driver
-        self.comfy_up = True
-        self.frees = 0
+        self.comfy_up, self.frees = True, 0
         self.queue: int | None = 0
         self.chat_gate: threading.Event | None = None   # set → chat calls block until released
         self.chats: list[str] = []
         self.streamed: list[dict[str, Any]] = []
+        self.sent: list[dict[str, Any]] = []   # llm_chat payloads
+        self.uploads: list[tuple[str, bytes, str]] = []
+        self.graphs: list[dict[str, Any]] = []
 
     def llm_healthy(self, model) -> bool:
         return unit_ref(model["unit"]).name in self.driver.active
 
     def llm_chat(self, model, payload) -> dict[str, Any]:
         self.chats.append(model["served_name"])
+        self.sent.append(dict(payload))
         if self.chat_gate is not None:
             assert self.chat_gate.wait(WAIT_S)
         return {"choices": [{"message": {"content": model["served_name"]}}],
@@ -103,10 +147,15 @@ class FakeBackends:
         self.frees += 1
 
     def comfy_run(self, key, graph, jid) -> dict[str, Any]:
+        self.graphs.append(graph)
         return {"model": key, "outputs": [{"file": f"broker/{jid}.png"}], "nodes": len(graph)}
 
     def comfy_queue_len(self) -> int | None:
         return self.queue
+
+    def comfy_upload(self, name: str, data: bytes, kind: str) -> str:
+        self.uploads.append((name, data, kind))
+        return name
 
 
 def make_settings(tmp_path: pathlib.Path, catalog: pathlib.Path = FIX / "catalog.yaml", **over: Any) -> settings_mod.Settings:
@@ -114,7 +163,8 @@ def make_settings(tmp_path: pathlib.Path, catalog: pathlib.Path = FIX / "catalog
     shutil.copy(catalog, cat)
     s = settings_mod.Settings(catalog=str(cat), db=str(tmp_path / "b.db"), events_jsonl=str(tmp_path / "e.jsonl"),
                               gpu_stream=False, intervals=FAST,
-                              comfy=settings_mod.Comfy(unit=unit_ref("comfyui")))
+                              comfy=settings_mod.Comfy(unit=unit_ref("comfyui"), output_dir=COMFY_OUTPUT),
+                              inputs=settings_mod.Inputs(staging_dir=str(tmp_path / "inputs")))
     return dataclasses.replace(s, **over)
 
 
@@ -135,3 +185,16 @@ def done(b: Broker, jid: str) -> dict[str, Any]:
     view = b.view(jid)
     assert view is not None
     return {**view, "result": j.get("result")}
+
+
+def leftover_staged(b: Broker, timeout: float = WAIT_S) -> list[str]:
+    """Staged files still there once the GPU thread has dropped them: it does so just after a
+    job's terminal state, so wait (bounded) for staging to empty; returns what is left."""
+    end = time.monotonic() + timeout
+    while True:
+        d = b.staging.dir
+        left = sorted(p.name for p in d.iterdir()) if d.exists() else []
+        if not left or time.monotonic() >= end:
+            return left
+        time.sleep(0.01)
+

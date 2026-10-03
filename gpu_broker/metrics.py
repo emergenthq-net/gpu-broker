@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterable, Iterator
 from typing import Any
 
 from .constants import ERR_SHORT, JobState
+from .gpu import POWER_DECIMALS, PROCS_UNREADABLE, opt
 from .store import Store
 
 Sample = dict[str, Any]
@@ -27,20 +28,32 @@ DECIMALS = 2
 STREAM_ENDED = "stream ended"
 
 
+def _int(v: float | None) -> int | None:
+    return None if v is None else int(v)
+
+
 def parse_sample(line: str, now: float) -> Sample | None:
-    """`used,total,util,power,temp,sm|group:mib ...` → sample dict (None if malformed)."""
+    """`used,total,util,power,temp,clock|group:mib ...` (gpu_broker.gpu.line) → sample dict, None
+    if malformed. Only used and total are required: an empty field, or an nvidia-smi "[N/A]"
+    from a host script that predates gpu-broker-gpu, is unknown (None). `sm_mhz` repeats
+    `clock_mhz` (deprecated; removed in the next release)."""
     head, _, procs = line.strip().partition("|")
     try:
-        used, total, util, power, temp, sm = (float(x) for x in head.split(","))
+        used, total, util, power, temp, clock = (opt(x) for x in head.split(","))
     except ValueError:
         return None
+    if used is None or total is None:
+        return None
     by_group: dict[str, int] = collections.Counter()
-    for p in procs.split():
+    tokens = procs.split()
+    for p in tokens:
         group, _, mib = p.rpartition(":")
         if group and mib.isdigit():
             by_group[group] += int(mib)
-    return {"t": now, "used_mib": int(used), "total_mib": int(total), "util_pct": int(util),
-            "power_w": round(power, 1), "temp_c": int(temp), "sm_mhz": int(sm), "by_group": dict(by_group)}
+    return {"t": now, "used_mib": int(used), "total_mib": int(total), "util_pct": _int(util),
+            "power_w": None if power is None else round(power, POWER_DECIMALS),
+            "temp_c": _int(temp), "clock_mhz": _int(clock), "sm_mhz": _int(clock),
+            "by_group": dict(by_group), "procs_unreadable": PROCS_UNREADABLE in tokens}
 
 
 class GpuSampler:
@@ -64,6 +77,15 @@ class GpuSampler:
             except Exception as e:  # noqa: BLE001 — shown on the dashboard, then reconnect
                 self.error = str(e)[:ERR_SHORT]
             stop.wait(self.retry_s)
+
+    def latest(self, max_age_s: float, after: float = 0.0) -> tuple[int, int, int | None] | None:
+        """(used MiB, total MiB, util %) from the newest sample, if it is at most `max_age_s` old
+        and was taken after `after` (a time.time())."""
+        with self._lock:
+            s = self._buf[-1] if self._buf else None
+        if s is None or time.time() - s["t"] > max_age_s or s["t"] <= after:
+            return None
+        return s["used_mib"], s["total_mib"], s["util_pct"]
 
     def since(self, t: float) -> list[Sample]:
         with self._lock:
