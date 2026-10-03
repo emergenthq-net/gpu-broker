@@ -1,4 +1,5 @@
-"""`gpu-broker` console script: serve the API, or check a config and catalog without running anything."""
+"""`gpu-broker` console script: serve the API, check a config and catalog without running anything,
+write a starter config (init), or run the demo."""
 from __future__ import annotations
 
 import argparse
@@ -12,6 +13,11 @@ from .constants import APP_NAME, ERR_SHORT, TOKEN_ENV, Runner
 from .templates import TEMPLATES
 
 EXIT_OK, EXIT_PROBLEMS, EXIT_NO_TOKEN = 0, 1, 2
+INIT_NEXT = """
+Next:
+  1. Edit {catalog}: your model servers' units, endpoints and sizes.
+  2. gpu-broker -c {config} check
+  3. sudo BROKER_TOKEN=$(openssl rand -hex 24) gpu-broker -c {config} serve"""
 
 
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
@@ -24,6 +30,9 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     serve.add_argument("--port", type=int, help="port (default: server.port from the config)")
     sub.add_parser("check", help="load config + catalog, build the driver, read the GPU once, print a summary; "
                                  "starts and stops nothing")
+    initp = sub.add_parser("init", help="write a starter config.yaml and catalog.yaml, and create the folders they name")
+    initp.add_argument("--dir", default=None, help="where to write them (default: /etc/gpu-broker)")
+    initp.add_argument("--force", action="store_true", help="replace existing files")
     demo = sub.add_parser("demo", help="try it without a GPU: the dashboard and API on a simulated card")
     demo.add_argument("--host", help="bind address (default: this machine only, 127.0.0.1)")
     demo.add_argument("--port", type=int, help="port (default: a free one, 8096 if it is free)")
@@ -33,6 +42,8 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     if a.cmd == "demo":   # needs no config file, token or host access; serve and check never load the demo
         from .demo import run
         return run.main(a.host, a.port, a.quiet, a.browser)
+    if a.cmd == "init":
+        return init(a.dir, a.force)
     cfg = settings.load(a.config, env)
     if a.cmd == "check":
         return check(cfg)
@@ -47,6 +58,20 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     app = create_app(Broker(cfg, env), token)
     uvicorn.run(app, host=getattr(a, "host", None) or cfg.server.host, port=getattr(a, "port", None) or cfg.server.port,
                 timeout_graceful_shutdown=cfg.server.graceful_shutdown_s)
+    return EXIT_OK
+
+
+def init(dest: str | None, force: bool) -> int:
+    from . import starter
+    dest = dest or starter.DEFAULT_DIR
+    try:
+        lines = starter.run(dest, force)
+    except PermissionError as e:
+        print(f"{APP_NAME}: cannot write {e.filename}: permission denied (run init with sudo)",
+              file=sys.stderr)
+        return EXIT_PROBLEMS
+    print("\n".join(lines))
+    print(INIT_NEXT.format(catalog=os.path.join(dest, starter.CATALOG), config=os.path.join(dest, starter.CONFIG)))
     return EXIT_OK
 
 

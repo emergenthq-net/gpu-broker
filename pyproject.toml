@@ -29,6 +29,8 @@ Homepage = "https://github.com/emergenthq-net/gpu-broker"
 Repository = "https://github.com/emergenthq-net/gpu-broker"
 Issues = "https://github.com/emergenthq-net/gpu-broker/issues"
 Releases = "https://github.com/emergenthq-net/gpu-broker/releases"
+Changelog = "https://github.com/emergenthq-net/gpu-broker/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/emergenthq-net/gpu-broker/tree/main/docs"
 
 [project.optional-dependencies]
 download = ["huggingface_hub>=0.34"]   # provides the `hf` CLI used for model downloads
@@ -44,6 +46,7 @@ include = ["gpu_broker*"]   # every subpackage, found automatically: a new one c
 [tool.setuptools.package-data]
 gpu_broker = ["py.typed"]
 "gpu_broker.demo" = ["catalog.yaml"]
+"gpu_broker.starter" = ["config.yaml", "catalog.yaml"]
 "gpu_broker.web" = ["static/*.html", "static/*.js"]
 
 [tool.pytest.ini_options]
