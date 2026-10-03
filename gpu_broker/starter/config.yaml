@@ -1,0 +1,66 @@
+# gpu-broker config — systemd driver (the broker and the model servers run on this machine).
+# Install as /etc/gpu-broker/config.yaml, or point BROKER_CONFIG at it.
+# Secrets never go here: BROKER_TOKEN (API bearer token) and UPSTREAM_TOKEN_* (model server
+# API keys, referenced by a catalog entry's auth_env) come from the environment.
+catalog: /etc/gpu-broker/catalog.yaml
+db: /var/lib/gpu-broker/broker.db
+events_jsonl: /var/log/gpu-broker/events.jsonl
+gpu_stream: true          # sample the GPU for the dashboard's live charts
+
+server:
+  host: 127.0.0.1         # bind address; expose deliberately, behind TLS (see SECURITY.md)
+  port: 8095
+  graceful_shutdown_s: 10   # max wait for open connections on stop; keep systemd TimeoutStopSec above it
+
+comfy:
+  url: http://127.0.0.1:8188     # as the broker reaches ComfyUI
+  public_url: null               # as browsers reach it (dashboard links, job output URLs); default = url
+  unit: comfyui                  # started if ComfyUI is found down; null = never start it
+
+driver:
+  kind: systemd
+  sudo: false                    # true: run `sudo -n systemctl ...` (add a narrow sudoers rule)
+  user: false                    # true: `systemctl --user` units
+  models_root: /var/lib/gpu-broker/models    # downloads land in <models_root>/<slug>
+  comfy_models_dir: /opt/ComfyUI/models      # where `link` exposes downloaded files to ComfyUI
+  # allowed_units: [llama-server, comfyui]   # default: every unit named in the catalog + comfy.unit
+
+timeouts:                 # seconds; every key and its default: gpu_broker/settings.py
+  chat_wait_s: 570        # /v1/chat/completions: queue + switch + run
+  llm_start_s: 240        # an LLM server must pass its health check within this
+intervals:
+  gpu_sample_s: 2         # local GPU sampler period
+
+inputs:                   # input files for image-to-video, image-edit and exec jobs
+  max_bytes: 20971520     # per image, decoded
+  video_max_bytes: 104857600
+  max_frames: 64          # images in one `frames` list
+  types: [png, jpeg, webp]
+  video_types: [mp4, mov, webm]
+  allow_urls: false       # true lets callers send <slot>_url: the broker then fetches public http(s) URLs
+  url_allow_networks: []  # CIDRs <slot>_url may reach besides public addresses and comfy.url, e.g. [192.168.1.0/24]
+  staging_dir: /var/lib/gpu-broker/inputs
+
+ui:
+  gpu_label: NVIDIA GPU               # dashboard GPU card title
+  resident_label: the default model   # who holds the GPU when nothing else is running
+  power_max_w: 450                    # chart scales
+  temp_max_c: 90
+  groups:                             # VRAM-by-owner legend; ids are systemd unit names here
+    llama-server: {label: llama.cpp, color: "#3b5bdb"}
+    comfyui: {label: ComfyUI, color: "#e8590c"}
+
+# Drop-in replacement for hosted APIs (docs/drop-in.md): an app written for ChatGPT or Claude
+# asks for a hosted model by name; these globs say which catalog model answers instead.
+# First match wins, case-insensitive; "@default" = the catalog's resident LLM. Names the
+# catalog already knows are never mapped. Every response reports what ran (x_broker.used).
+# Env override: BROKER_MODEL_MAP='{"gpt-*": "@default"}' (JSON).
+model_map:
+  # "gpt-4o-mini": llama-3.1-8b-precise     # a specific name first, before its general pattern
+  "gpt-*": "@default"
+  "chatgpt-*": "@default"
+  "o1*": "@default"
+  "o3*": "@default"
+  "o4*": "@default"
+  "claude-*": "@default"
+  # "text-embedding-*": my-embedder         # a catalog model with caps: [embed]

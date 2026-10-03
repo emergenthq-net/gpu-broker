@@ -21,5 +21,10 @@
 - **New driver?** Implement `drivers.Driver`, validate every argument with
   `drivers.validate`, enforce the allowlist with `drivers.check`, take an injectable `run` so
   tests can record argv, and add it to `drivers.build`.
+- **Changelog.** Add each user-visible change to `## [Unreleased]` in CHANGELOG.md
+  ([Keep a Changelog](https://keepachangelog.com/en/1.1.0/) groups: Added, Changed, Fixed, Security).
+- **Releasing.** The release PR renames `[Unreleased]` to `## [X.Y.Z] - YYYY-MM-DD`, bumps
+  `pyproject.toml`, and adds the compare link. The GitHub release notes are that entry:
+  `gh release create vX.Y.Z --notes-file <(python scripts/changelog_entry.py X.Y.Z)`.
 - Small PRs with a clear description of behaviour changes. By contributing you agree your
   work is licensed under Apache-2.0.

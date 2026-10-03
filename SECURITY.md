@@ -7,6 +7,9 @@ advisories) on this repository rather than in a public issue.
 
 ## Threat model
 
+The full threat model, with each threat tied to the code and tests that mitigate it, is in
+[docs/threat-model.md](docs/threat-model.md). This section is the user-facing summary.
+
 gpu-broker controls services on a GPU host, so the questions are: who can make it act, what
 can they make it do, and what can a compromised broker reach.
 

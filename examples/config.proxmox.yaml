@@ -1,5 +1,5 @@
 # gpu-broker config — Proxmox driver. The broker runs in its own LXC/VM; model servers are
-# systemd units inside other containers. See README "Security model" and host/gpu-broker-ctl.
+# systemd units inside other containers. See README "Security" and host/gpu-broker-ctl.
 catalog: /etc/gpu-broker/catalog.yaml     # units written as {name: llama-server, target: 101}
 comfy:
   url: http://192.0.2.102:8188
