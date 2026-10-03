@@ -27,7 +27,7 @@ def test_parse_and_substitute():
     assert r.dirs(JID) == (f"/tmp/x/in/{JID}", f"/tmp/x/out/{JID}")
     assert r.command(JID) == ["/opt/t/bin/predict", "-i", f"/tmp/x/in/{JID}", "-o", f"/tmp/x/out/{JID}",
                               "-c", "/models/t.pt", "--tag", JID]
-    assert recipes.parse("t", GOOD + "target=158\n").target == "158"
+    assert recipes.parse("t", GOOD + "target=101\n").target == "101"
     assert recipes.parse("t", GOOD + "outputs=world.mp4  *.log\n").outputs == ("world.mp4", "*.log")
     assert recipes.parse("t", GOOD.replace("timeout_s=600", "timeout_s=0.5")).timeout_s == 0.5
 
@@ -43,7 +43,7 @@ def test_parse_and_substitute():
     ("outputs= \n", "outputs must be"), ("timeout_s=1e9\n", "timeout_s must be"), ("timeout_s=\n", "missing"),
     ("timeout_s=0\n", "positive"), ("timeout_s=0.00\n", "positive"),
     ("out_dir=/tmp/{jid}/out\n", "end in /{jid}"), ("out_dir=/tmp/{jid}/{jid}\n", "end in /{jid}"),
-    ("target=158;id\n", "target must be"), ("argv=\n", "missing"),
+    ("target=101;id\n", "target must be"), ("argv=\n", "missing"),
     ("timeout_s=600\r\n", "carriage return"), ("# note\r\n", "carriage return")])
 def test_parse_rejects(change, msg):
     with pytest.raises(ValueError, match=msg):
@@ -157,7 +157,7 @@ def test_systemd_driver_runs_a_recipe_and_validates_what_the_job_sends(tmp_path)
 
 def test_local_drivers_refuse_proxmox_recipes_and_docker_refuses_all(tmp_path):
     d = systemd(tmp_path, lambda *a, **k: pytest.fail("must not run"))
-    (tmp_path / "ct.recipe").write_text(GOOD + "target=158\n")
+    (tmp_path / "ct.recipe").write_text(GOOD + "target=101\n")
     for call in (lambda: d.run_recipe("ct", "abcdef12", [], 60), lambda: d.recipe_info("ct")):
         with pytest.raises(ValueError, match="for the proxmox driver"):
             call()
@@ -187,7 +187,7 @@ def test_a_local_clean_needs_only_the_reap_not_a_loadable_recipe(tmp_path, monke
     d = systemd(tmp_path, lambda *a, **k: pytest.fail("a clean runs nothing"))
     reaped = []
     monkeypatch.setattr(local.reap, "reap", lambda jid, wait_s: reaped.append(jid) or True)
-    (tmp_path / "ct.recipe").write_text(GOOD + "target=158\n")
+    (tmp_path / "ct.recipe").write_text(GOOD + "target=101\n")
     (tmp_path / "bad.recipe").write_text("not a recipe\n")
     for name in ("gone", "bad", "ct"):
         d.clean_recipe(name, "abcdef12")

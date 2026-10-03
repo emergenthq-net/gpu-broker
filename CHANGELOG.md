@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.3.1
+
+### Changed
+- Tests and examples use neutral container ids and paths, and the demo's leak check reads its
+  denylist from `GPU_BROKER_LEAK_DENYLIST` instead of spelling it out. New
+  `scripts/leak_scan.py` scans the tree and the built sdist and wheel against that denylist;
+  CI (job `leak-scan`) and the release workflow run it before anything is published.
+
 ## 0.3.0
 
 ### Added

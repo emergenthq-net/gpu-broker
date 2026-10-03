@@ -2,10 +2,13 @@
 images. Every clock and sleep is a fake, so nothing here waits."""
 from __future__ import annotations
 
+import ipaddress
 import random
+import re
 import struct
 import zlib
 
+import pytest
 import yaml
 
 from gpu_broker.catalog import Catalog
@@ -17,14 +20,15 @@ from gpu_broker.demo.gpu import COMFY_GROUP, SimGpu
 from gpu_broker.demo.run import memory
 from gpu_broker.demo.tuning import CATALOG_FILE, SimCard, SimTimings
 from gpu_broker.metrics import parse_sample
-from tests.helpers import ROOT
+from tests.helpers import ROOT, load_leak_scan
 
 CARD = SimCard()
 
 
 def rng() -> random.Random:
     return random.Random(0)  # noqa: S311 — a seeded simulation, not security
-DEMO_CATALOG = ROOT / "gpu_broker/demo" / CATALOG_FILE
+DEMO_DIR = ROOT / "gpu_broker/demo"
+DEMO_CATALOG = DEMO_DIR / CATALOG_FILE
 
 
 class Clock:
@@ -48,14 +52,31 @@ def rig(tmp_path):
     return clock, gpu, driver, backends, catalog
 
 
-def test_the_demo_catalog_is_public_and_safe_for_work():
+def test_the_demo_catalog_offers_public_models_on_this_machine_only():
     data = yaml.safe_load(DEMO_CATALOG.read_text())
     assert set(data["models"]) == {"qwen3-8b", "llama-3.1-8b", "flux.2-klein-4b", "sdxl-base", "wan2.2-5b", "trellis"}
-    text = DEMO_CATALOG.read_text().lower()
-    for private in ("192.168.", "10.0.", "hawk", "nsfw", "uncensored", "abliterat", "target:", "ct:"):
-        assert private not in text
     assert all(m["endpoint"].startswith("http://127.0.0.1:") for m in data["models"].values() if "endpoint" in m)
+    assert not any("target" in m for m in data["models"].values())   # no container ids
     Catalog(str(DEMO_CATALOG))   # loads and validates like any catalog
+
+
+def test_the_demo_names_no_network_but_this_machine():
+    """Every IPv4 address in the demo (catalog, scripted traffic, defaults) is loopback or
+    "any": no private LAN, link-local or shared address can appear on its dashboard."""
+    found = {(f.name, a) for f in DEMO_DIR.rglob("*") if f.suffix in {".py", ".yaml"}
+             for a in re.findall(r"\b\d{1,3}(?:\.\d{1,3}){3}\b", f.read_text())}
+    assert found   # the check is looking at something
+    assert all(ipaddress.ip_address(a).is_loopback or ipaddress.ip_address(a).is_unspecified for _, a in found), found
+
+
+def test_the_demo_matches_nothing_on_the_private_denylist():
+    """With GPU_BROKER_LEAK_DENYLIST naming a denylist file (CI holds it as a secret, so the
+    list is never in this repository), nothing the demo ships or shows may match it."""
+    leak_scan = load_leak_scan()
+    pats = leak_scan.from_env()
+    if pats is None:
+        pytest.skip(f"{leak_scan.ENV} is not set")
+    assert leak_scan.scan([DEMO_DIR], pats, set()) == []
 
 
 def test_starting_a_chat_server_takes_its_load_time_and_claims_its_memory(tmp_path):

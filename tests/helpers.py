@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import dataclasses
+import importlib.util
 import json
 import pathlib
 import shutil
 import subprocess
 import threading
 import time
+import types
 from collections.abc import Iterator
 from typing import Any
 
@@ -26,6 +28,15 @@ FAST = settings_mod.Intervals(worker_poll_s=0.02, paused_s=0.01, health_poll_s=0
                               session_poll_s=0.001, gpu_sample_s=0.001, sampler_retry_s=0.01,
                               gpu_cache_s=0)
 WAIT_S = 5
+
+
+def load_leak_scan() -> types.ModuleType:
+    """scripts/leak_scan.py (a script, not part of the package) as a module."""
+    spec = importlib.util.spec_from_file_location("leak_scan", ROOT / "scripts/leak_scan.py")
+    assert spec and spec.loader
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
 
 
 class FakeDriver:
