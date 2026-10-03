@@ -64,6 +64,13 @@ def test_health_is_false_on_any_failure(http):
     assert backends().comfy_queue_len() == 2
 
 
+def test_health_asks_the_models_own_health_path(http):
+    _, routes = http
+    routes["/api/version"] = {"version": "0.9"}
+    assert backends().llm_healthy({**MODEL, "health_path": "/api/version"}) is True
+    assert backends().llm_healthy(MODEL) is False   # /health is not answered here
+
+
 def test_comfy_run_polls_until_complete_and_escapes_urls(http):
     seen, routes = http
     routes["/prompt"] = {"prompt_id": "a/b?c"}

@@ -40,6 +40,7 @@ class Model(TypedDict, total=False):
     unit: Any                  # unit spec, see units.py
     endpoint: str              # OpenAI-compatible base URL (llm_unit)
     served_name: str
+    health_path: str           # what answers 200 once the server is ready (default /health; Ollama: /api/version)
     auth_env: str              # env var holding the server's API key
     slots: int                 # concurrent calls the server accepts
     reserved_interactive: int  # of those, slots background work may never take
@@ -103,9 +104,16 @@ def validate(data: CatalogData) -> None:
         templates.check_defaults(key, m)
         if m.get("runner") == Runner.EXEC:
             _validate_exec(key, m.get("exec") or {})
+        if "health_path" in m and not _is_path(m["health_path"]):
+            raise ValueError(f"{key}: health_path must be a path on the endpoint, like /health")
         for url_key in ("endpoint", "open_url"):
             if url_key in m and urlsplit(m[url_key]).scheme not in HTTP_SCHEMES:
                 raise ValueError(f"{key}: {url_key} must be an http(s) URL")
+
+
+def _is_path(v: Any) -> bool:
+    """A path on the model's own endpoint: absolute, not `//host`, no query or fragment."""
+    return isinstance(v, str) and v.startswith("/") and not v.startswith("//") and not set("?#\\") & set(v)
 
 
 def _validate_inputs(key: str, m: Model) -> None:

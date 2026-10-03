@@ -7,7 +7,6 @@ one, starts the broker and the traffic, and serves until Ctrl+C.
 """
 from __future__ import annotations
 
-import contextlib
 import errno
 import os
 import pathlib
@@ -17,10 +16,10 @@ import socket
 import sys
 import tempfile
 import webbrowser
-from collections.abc import Callable, Mapping
 
 from fastapi import FastAPI
 
+from ..browser import open_browser
 from ..constants import APP_NAME
 from . import content
 from .assemble import Demo as Demo
@@ -34,11 +33,6 @@ LOG_LEVEL = "warning"  # keep the terminal to the banner; the dashboard shows wh
 BACKLOG = 128          # connections the bound port holds until the server starts accepting them
 ANY_PORT = 0
 EXIT_NO_PORT = 1
-# A browser can only be opened on this machine's own screen: not over SSH, and on Linux and
-# the BSDs only with a display server (without one, webbrowser may take over the terminal).
-SSH_ENV = ("SSH_CONNECTION", "SSH_TTY")
-DISPLAY_ENV = ("DISPLAY", "WAYLAND_DISPLAY")
-NEEDS_DISPLAY = ("linux", "freebsd", "openbsd", "netbsd")
 PORT_TAKEN = "{app}: port {port} on {host} is in use (another gpu-broker?). Pick another --port, or leave it out."
 
 
@@ -59,21 +53,6 @@ def bind(host: str, port: int | None) -> socket.socket:
         sock.listen(BACKLOG)
         return sock
     raise AssertionError("unreachable: binding port 0 picks a free port")
-
-
-def can_open_browser(env: Mapping[str, str], platform: str) -> bool:
-    if any(env.get(k) for k in SSH_ENV):
-        return False
-    return not platform.startswith(NEEDS_DISPLAY) or any(env.get(k) for k in DISPLAY_ENV)
-
-
-def open_browser(url: str, env: Mapping[str, str], platform: str, opener: Callable[[str], object]) -> None:
-    """Open `url` where there is a screen to open it on; otherwise (or if that fails) do nothing:
-    the link is printed either way."""
-    if not can_open_browser(env, platform):
-        return
-    with contextlib.suppress(Exception):   # a missing or broken browser must not stop the demo
-        opener(url)
 
 
 def serve(app: FastAPI, sock: socket.socket, graceful_s: int) -> None:

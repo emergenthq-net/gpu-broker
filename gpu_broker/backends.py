@@ -91,7 +91,7 @@ class HttpBackends:
 
     # ---- LLM servers ----------------------------------------------------
     def llm_healthy(self, model: Model) -> bool:
-        return self._ok(_request(model["endpoint"] + HEALTH, headers=self._auth(model)))
+        return self._ok(_request(model["endpoint"] + model.get("health_path", HEALTH), headers=self._auth(model)))
 
     def _chat_request(self, model: Model, payload: Mapping[str, Any], stream: bool | None,
                       path: str = CHAT) -> urllib.request.Request:

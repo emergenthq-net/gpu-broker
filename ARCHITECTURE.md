@@ -27,7 +27,7 @@ catalog.py      the loaded model catalog (trusted config) and its safe writes
   catalogschema.py  catalog entry types and validation rules
 templates/      ComfyUI graph builders                   (pure)
 backends.py     HTTP to LLM servers and ComfyUI          (the only client of configured addresses)
-drivers/        start/stop units, read the GPU, fetch files, run exec recipes  (the only subprocesses)
+drivers/        start/stop units, read the GPU, fetch files, run exec recipes  (the only subprocesses of `serve`)
 store.py        SQLite jobs/events/downloads/flags + JSONL event log
 schema.py       the SQLite schema and its migrations
 gpu/            GPU probes: nvidia-smi, amdgpu sysfs + DRM fdinfo; the sample-line format
@@ -35,6 +35,14 @@ metrics.py      GPU samples, job latency/throughput
 settings.py     loading configuration: YAML file + environment
   settingsschema.py the configuration dataclasses (tuning.py: the tuning sections)
 constants.py    protocol vocabulary
+
+cli.py          the console script: serve, check, init, setup, demo
+setup/          `gpu-broker setup`: detect servers, write config + token, install the service
+                (runs once, at install; its own argv-only subprocesses: systemctl, sudo -n, uv,
+                useradd, visudo, loginctl)
+starter/        `gpu-broker init`: the starter config and catalog, and the writer setup uses
+browser.py      open a link on this machine's screen, never over SSH (demo, setup)
+demo/           `gpu-broker demo`: the real broker on a simulated card
 ```
 
 Dependencies point downwards only. `resolve` and `templates` are pure functions over plain
