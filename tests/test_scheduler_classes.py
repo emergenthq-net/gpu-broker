@@ -23,7 +23,11 @@ def test_a_switch_waits_for_the_call_the_resident_model_is_about_to_serve(make):
     b = make()
     b.backends.chat_gate = gate = threading.Event()
     m = b.catalog.models["llama-8b"]
-    busy = [call(b, HEAVY) for _ in range(m["slots"] - m["reserved_interactive"])] + [call(b, "op1")]
+    busy = [call(b, HEAVY) for _ in range(m["slots"] - m["reserved_interactive"])]
+    # Every background slot taken before op1 arrives: `fair` would otherwise run op1 ahead of a
+    # still-queued background call, which then has no slot left outside the interactive reserve.
+    assert until(lambda: len(b.scheduler.pool.ids()) == len(busy))
+    busy.append(call(b, "op1"))
     assert until(lambda: len(b.scheduler.pool.ids()) == m["slots"])   # every slot busy
     x = call(b, "op2")                                                  # interactive, waits for a slot
     y = b.submit({"model": "sdxl-base", "prompt": "y"}, "artist", priority="background")[0]

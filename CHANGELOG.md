@@ -50,6 +50,8 @@ and versions follow [Semantic Versioning](https://semver.org/).
   broker did. Offline; the yardstick for scheduler changes.
 
 ### Fixed
+- A job's new state and its `job.<state>` event are written together, so a client that sees a job
+  finish in `/v1/jobs` always finds its `job.done` / `job.failed` in `/v1/events`.
 - MCP `initialize` reports the installed gpu-broker version in `serverInfo` (it was empty).
 
 ### Changed

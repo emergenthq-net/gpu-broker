@@ -1,3 +1,6 @@
+import threading
+
+from gpu_broker.constants import JobState
 from gpu_broker.store import Store
 
 
@@ -37,3 +40,28 @@ def test_update_job_only_writes_known_columns(tmp_path):
 def test_creates_missing_directories(tmp_path):
     Store(str(tmp_path / "a" / "b.db"), str(tmp_path / "logs" / "e.jsonl")).event("x")
     assert (tmp_path / "logs" / "e.jsonl").exists()
+
+
+
+class CountingLock:
+    def __init__(self) -> None:
+        self.lock, self.taken = threading.Lock(), 0
+
+    def __enter__(self) -> None:
+        self.lock.acquire()
+        self.taken += 1
+
+    def __exit__(self, *exc: object) -> None:
+        self.lock.release()
+
+
+def test_a_state_change_and_its_event_are_written_under_one_lock(tmp_path):
+    """Two acquisitions leave a gap in which a reader sees the job done with no `job.done`
+    (a client paging /v1/events after /v1/jobs said done; seen as a flaky re-queue test)."""
+    s = Store(str(tmp_path / "b.db"), str(tmp_path / "e.jsonl"))
+    s._lock = lock = CountingLock()
+    jid = s.create_job("t", "m", {})
+    assert lock.taken == 1
+    s.update_job(jid, state=JobState.DONE)
+    assert lock.taken == 2
+    assert s.job(jid)["state"] == JobState.DONE and s.events(0, 10)[-1]["kind"] == "job." + JobState.DONE

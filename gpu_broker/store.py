@@ -70,8 +70,13 @@ class Store:
 
     # ---- events ---------------------------------------------------------
     def event(self, kind: str, job_id: str | None = None, **data: Any) -> None:
+        with self._lock:
+            self._event(kind, job_id, data)
+
+    def _event(self, kind: str, job_id: str | None, data: dict[str, Any]) -> None:
+        """Log one event; the caller holds `_lock`."""
         ts = time.time()
-        self._exec("INSERT INTO events(ts,job_id,kind,data) VALUES (?,?,?,?)", (ts, job_id, kind, json.dumps(data)))
+        self._db.execute("INSERT INTO events(ts,job_id,kind,data) VALUES (?,?,?,?)", (ts, job_id, kind, json.dumps(data)))
         if self._jsonl:
             with open(self._jsonl, "a") as f:
                 f.write(json.dumps({"ts": ts, "job_id": job_id, "kind": kind, **data}) + "\n")
@@ -90,9 +95,10 @@ class Store:
     def create_job(self, requester: str, requested: str, payload: dict[str, Any], exec_recipe: str = schema.NOT_EXEC,
                    owner: str | None = None) -> str:
         jid, now = uuid.uuid4().hex[:JOB_ID_HEX], time.time()
-        self._exec("INSERT INTO jobs(id,created,updated,requester,requested,state,payload,exec_recipe,owner) VALUES (?,?,?,?,?,?,?,?,?)",
-                   (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload), exec_recipe, owner))
-        self.event(JOB_EVENT_PREFIX + JobState.RECEIVED, jid, requester=requester, requested=requested)
+        with self._lock:
+            self._db.execute("INSERT INTO jobs(id,created,updated,requester,requested,state,payload,exec_recipe,owner) VALUES (?,?,?,?,?,?,?,?,?)",
+                             (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload), exec_recipe, owner))
+            self._event(JOB_EVENT_PREFIX + JobState.RECEIVED, jid, {"requester": requester, "requested": requested})
         return jid
 
     def update_job(self, jid: str, **fields: Any) -> None:
@@ -103,9 +109,11 @@ class Store:
                 for k, v in fields.items()}
         cols["updated"] = time.time()
         sets = ", ".join(f"{k}=?" for k in cols)
-        self._exec(f"UPDATE jobs SET {sets} WHERE id=?", (*cols.values(), jid))  # noqa: S608 — column names from UPDATABLE
-        if "state" in fields:
-            self.event(JOB_EVENT_PREFIX + fields["state"], jid, **{k: fields[k] for k in EVENT_FIELDS if k in fields})
+        # One lock for the row and its event, so whoever sees the new state also sees `job.<state>`.
+        with self._lock:
+            self._db.execute(f"UPDATE jobs SET {sets} WHERE id=?", (*cols.values(), jid))  # noqa: S608 — column names from UPDATABLE
+            if "state" in fields:
+                self._event(JOB_EVENT_PREFIX + fields["state"], jid, {k: fields[k] for k in EVENT_FIELDS if k in fields})
         self._changed()
 
     def _changed(self) -> None:
