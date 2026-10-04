@@ -49,7 +49,7 @@ def test_ip_literals_are_not_looked_up():
     def never(*a, **k):
         pytest.fail("an IP literal needs no lookup")
     d = Deadline(5)
-    for ip in ("10.1.2.158", "2606:4700::1", "fe80::1%eth0"):
+    for ip in ("192.0.2.158", "2606:4700::1", "fe80::1%eth0"):
         assert deadline.resolve(ip, 80, d, never) == [ip]
     d.close()
 

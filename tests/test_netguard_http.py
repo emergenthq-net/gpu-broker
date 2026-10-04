@@ -74,7 +74,7 @@ def test_an_allowlisted_network_is_fetched_directly_despite_a_proxy_setting(serv
     assert media.fetch("image", server + "/a.png", cfg("127.0.0.1/32")).data == PNG
 
 
-@pytest.mark.parametrize("target", ["http://10.1.2.1/a.png", "http://169.254.169.254/latest/meta-data",
+@pytest.mark.parametrize("target", ["http://10.9.0.1/a.png", "http://169.254.169.254/latest/meta-data",
                                     "http://[::1]:9/a.png", "file:///etc/passwd"])
 def test_every_redirect_hop_is_checked(server, target):
     with pytest.raises(ValueError, match=r"^`image_url` could not be fetched$"):

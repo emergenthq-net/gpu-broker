@@ -2,8 +2,10 @@
 
 A broker with steady LLM traffic is never idle, so a deploy cannot wait for a gap.
 POST /v1/admin/quiesce stops the GPU thread taking new jobs, closes the direct chat path,
-and waits (up to `wait_s`) for in-flight calls to finish. Jobs still queued at the restart are failed at startup as
-orphans; clients retry them. POST /v1/admin/resume undoes a quiesce without restarting.
+and waits (up to `wait_s`) for in-flight calls to finish. While quiesced, new jobs and chats get
+HTTP 503 with Retry-After (quiesce.py) instead of being queued. Jobs already queued wait, and
+the next start re-queues them in order (Broker.start); only work that had started is orphaned.
+POST /v1/admin/resume undoes a quiesce without restarting.
 
 POST /v1/admin/gpu-held/clear acknowledges a GPU hold (holds.py) after an operator has made
 sure the held job's processes are gone; resume and restarts leave a hold in place.
@@ -25,7 +27,8 @@ def router(broker: Broker) -> APIRouter:
 
     @r.post("/v1/admin/quiesce")
     def quiesce(wait_s: float = max_wait) -> dict[str, Any]:
-        sched.paused.set()
+        with sched.admission:   # from here every new job or chat is refused with 503 (quiesce.py)
+            sched.paused.set()
         broker.store.event(Event.QUIESCE, inflight=len(sched.pool.ids()))
         drained = sched.pool.close_and_drain(timeout=max(0.0, min(wait_s, max_wait)))   # direct chat too
         queued, running, inflight = sched.snapshot()

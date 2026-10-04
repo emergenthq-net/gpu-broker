@@ -9,6 +9,7 @@ For the OpenAI and Anthropic SDKs, see [drop-in.md](drop-in.md).
 | endpoint | what it does |
 |---|---|
 | `POST /v1/chat/completions` | OpenAI-compatible chat. Broker details are in `x_broker`. |
+| `POST /v1/responses` | The OpenAI Responses API (Codex, `client.responses`); `previous_response_id` is kept for an hour. See [drop-in.md](drop-in.md). |
 | `POST /v1/jobs` | Run any model as a job. |
 | `GET /v1/jobs/{id}` | The job's state, the model it used, and its outputs. |
 | `GET /v1/models` | Ready LLMs and their variants (OpenAI format). |
@@ -17,9 +18,10 @@ For the OpenAI and Anthropic SDKs, see [drop-in.md](drop-in.md).
 | `GET /v1/events?since=N` | The event log. |
 | `GET /v1/gpu`, `/v1/metrics`, `/v1/stats`, `/v1/ui` | Dashboard data: GPU reading, live samples (job latency, tok/s), per-model stats, labels. |
 | `POST /v1/sessions`, `/v1/sessions/end` | Borrow the GPU for interactive ComfyUI, and give it back. |
-| `POST /v1/admin/quiesce`, `/v1/admin/resume` | Drain in-flight calls before a restart, and undo that. |
+| `POST /v1/admin/quiesce`, `/v1/admin/resume` | Drain in-flight calls before a restart, and undo that. While quiesced, new jobs and chats get `503` with `Retry-After` (the SDKs retry it). |
 | `POST /v1/admin/gpu-held/clear` | Lift a GPU hold ([exec-recipes.md](exec-recipes.md#gpu-hold-after-a-crash)). |
-| `GET /health` | Liveness check. No auth. |
+| `POST /mcp` | The MCP server (Streamable HTTP, stateless) when the `mcp` extra is installed ([mcp.md](mcp.md)). Chat-route credentials; a client key sees only its own jobs. |
+| `GET /health` | Liveness check. No auth; `mcp` says whether `/mcp` is served. |
 | `GET /dash` | The dashboard. |
 
 ## Chat
@@ -29,12 +31,12 @@ For the OpenAI and Anthropic SDKs, see [drop-in.md](drop-in.md).
 - Other calls are queued.
   - A queued call answered with `stream: true` arrives as a single SSE chunk.
 
-Optional headers:
+Optional headers, on chat requests and `POST /v1/jobs`:
 
 | header | effect |
 |---|---|
 | `x-requester` | Labels the caller (dashboard, event log). |
-| `x-priority: interactive\|background` | Overrides the catalog's `background_requesters`. |
+| `x-priority: interactive\|background` | The call's class. A requester in `background_requesters` may only lower it (see `scheduler.may_claim_interactive`). |
 
 ## Jobs
 
@@ -46,7 +48,8 @@ Request body:
 | `kind`, `caps` | Optional: what a substitute must be able to do. |
 | `prompt` or `messages` | The prompt. |
 | `image`, `end_image`, `video` | Input files: base64 or `data:` URL. `<slot>_url` when enabled. |
-| `frames` | A list of base64 images. |
+| `frames` | A list of base64 images (input views). |
+| `num_frames` | A video's length in frames. |
 | `wait`, `wait_s` | Block until the job ends, up to `wait_s`. |
 | anything else | A parameter for the model's ComfyUI template. Exec models take only the keys in `exec.params`. |
 

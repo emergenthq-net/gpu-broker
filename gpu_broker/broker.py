@@ -51,7 +51,7 @@ class Broker:
         self.sessions = Sessions(self.catalog.defaults, self.backends.comfy_queue_len, s.intervals.session_poll_s)
         self.exec_jobs = execjob.ExecJobs(self.driver, self.staging, s.comfy, s.timeouts)
         self.scheduler = Scheduler(self.catalog, self.store, self.residency, self.backends, self.sessions, s.intervals,
-                                   self.staging, self.exec_jobs)
+                                   self.staging, self.exec_jobs, s.scheduler)
         execjob.check_timeouts(self.catalog, self.exec_jobs, self.store)
         self.sessions.queued_jobs = self.scheduler.has_queued
         self.chat = DirectChat(self.catalog, self.store, self.scheduler.pool, self.backends)
@@ -66,14 +66,16 @@ class Broker:
         is not read here: which reader to use is resolved on first use, so a GPU that cannot be
         read yet never stops the broker serving; /v1/gpu and the dashboard say why while the
         sampler keeps retrying."""
-        for job in self.store.fail_orphans():
-            if job["state"] == JobState.RUNNING:
-                self.scheduler.hold.orphan(job, self.catalog.models)
-        self.staging.clear()   # images of jobs the previous process never ran
+        lost, waiting = self.store.fail_orphans()
+        for job in (j for j in lost if j["state"] == JobState.RUNNING):
+            self.scheduler.hold.orphan(job, self.catalog.models)
+        self.staging.clear(keep=frozenset(waiting))   # files of failed jobs; re-queued jobs keep theirs
         self.scheduler.pool.reopen(self.residency.detect())
+        self.scheduler.requeue(waiting)   # in their original order, ahead of anything submitted from now on
         self.store.event(Event.BROKER_STARTED, resident=self.residency.current, driver=self.settings.driver.kind,
                          config=self.settings.source)
         loops = [self.scheduler.loop, self.downloads.loop] + ([self.sampler.loop] if self.settings.gpu_stream else [])
+        loops += [self.scheduler.costs.loop] if self.scheduler.classes.strict else []   # fifo charges nothing
         for loop in loops:
             t = threading.Thread(target=loop, args=(self._stop,), daemon=True, name=loop.__qualname__)
             t.start()
@@ -92,9 +94,9 @@ class Broker:
                 t.join(join_s)
 
     def submit(self, body: Mapping[str, Any], requester: str, requested: str | None = None,
-               note: str | None = None) -> tuple[str, dict[str, Any]]:
+               note: str | None = None, priority: str = "", owner: str | None = None) -> tuple[str, dict[str, Any]]:
         """Admit a request (admission.py); returns (job id, what the caller needs to know)."""
-        return admission.submit(self, body, requester, requested, note)
+        return admission.submit(self, body, requester, requested, note, priority, owner)
 
     def view(self, jid: str) -> Row | None:
         """A job as callers see it: without the request payload, with its queue position."""

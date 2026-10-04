@@ -29,11 +29,12 @@ Row = dict[str, Any]
 
 JOB_ID_HEX = 12
 JSON_COLUMNS = ("payload", "result", "download")
-UPDATABLE = frozenset({"resolved", "substitution", "state", "result", "error", "download"})
+UPDATABLE = frozenset({"resolved", "substitution", "state", "result", "error", "download", "payload"})
 EVENT_FIELDS = ("resolved", "substitution", "error")   # job fields copied into its state event
 PHASES = (JobState.RECEIVED, JobState.SWITCHING, JobState.RUNNING)
 FINISHED = (JobState.DONE, JobState.FAILED)
 ORPHANED = "orphaned by broker restart"
+SQL_IN_MAX = 500   # ids per IN (...) list, well under SQLite's bound-variable limit
 DECIMALS = 1
 
 
@@ -86,10 +87,11 @@ class Store:
         return [{**r, "data": json.loads(r["data"])} for r in rows]
 
     # ---- jobs -----------------------------------------------------------
-    def create_job(self, requester: str, requested: str, payload: dict[str, Any], exec_recipe: str = schema.NOT_EXEC) -> str:
+    def create_job(self, requester: str, requested: str, payload: dict[str, Any], exec_recipe: str = schema.NOT_EXEC,
+                   owner: str | None = None) -> str:
         jid, now = uuid.uuid4().hex[:JOB_ID_HEX], time.time()
-        self._exec("INSERT INTO jobs(id,created,updated,requester,requested,state,payload,exec_recipe) VALUES (?,?,?,?,?,?,?,?)",
-                   (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload), exec_recipe))
+        self._exec("INSERT INTO jobs(id,created,updated,requester,requested,state,payload,exec_recipe,owner) VALUES (?,?,?,?,?,?,?,?,?)",
+                   (jid, now, now, requester, requested, JobState.RECEIVED, json.dumps(payload), exec_recipe, owner))
         self.event(JOB_EVENT_PREFIX + JobState.RECEIVED, jid, requester=requester, requested=requested)
         return jid
 
@@ -131,16 +133,22 @@ class Store:
             out.setdefault(r["job_id"], {})[r["kind"].removeprefix(JOB_EVENT_PREFIX)] = r["ts"]
         return out
 
-    def fail_orphans(self) -> list[Row]:
-        """At startup nothing is in flight: fail every non-terminal job; returns them as they were,
-        with `direct` (a direct chat)."""
-        lost = list(map(_decode, self._all(schema.ORPHANS + f"({_in(TERMINAL)})", (Event.JOB_DIRECT, *TERMINAL))))
+    def fail_orphans(self) -> tuple[list[Row], list[str]]:
+        """At startup nothing is in flight. Returns (jobs failed as orphans, as they were, with
+        `direct`; ids of jobs still waiting in the queue, oldest first, which never started and
+        are re-queued). Whatever had started (received, switching, running, a direct chat) failed."""
+        rows = list(map(_decode, self._all(schema.ORPHANS + f"({_in(TERMINAL)}) ORDER BY created, rowid", (Event.JOB_DIRECT, *TERMINAL))))
+        waiting = [j["id"] for j in rows if j["state"] == JobState.QUEUED and not j["direct"]]
+        keep = set(waiting)
+        lost = [j for j in rows if j["id"] not in keep]
+        ids, now = [j["id"] for j in lost], time.time()
+        for part in (tuple(ids[i:i + SQL_IN_MAX]) for i in range(0, len(ids), SQL_IN_MAX)):
+            self._exec(f"UPDATE jobs SET state=?, error=?, updated=? WHERE id IN ({_in(part)})",  # noqa: S608
+                       (JobState.FAILED, ORPHANED, now, *part))
         if lost:
-            self._exec(f"UPDATE jobs SET state=?, error=?, updated=? WHERE state NOT IN ({_in(TERMINAL)})",  # noqa: S608
-                       (JobState.FAILED, ORPHANED, time.time(), *TERMINAL))
             self.event(Event.ORPHANS_FAILED, count=len(lost))
             self._changed()
-        return lost
+        return lost, waiting
 
     def stats(self, since_ts: float) -> Row:
         """Per-model outcome counts and latency, plus residency/error event counts."""

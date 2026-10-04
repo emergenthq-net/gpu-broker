@@ -2,7 +2,9 @@
 
 An app written for a hosted API asks for the hosted model by name. `model_map` in the config
 says which catalog model answers instead: `{pattern: target}`, glob patterns, first match
-wins, the target `@default` meaning the catalog's resident LLM. A name the catalog already
+wins, the target `@default` meaning the catalog's resident LLM. With no `model_map` in the
+config, `constants.DEFAULT_MODEL_MAP` applies (gpt-*, chatgpt-*, o1/o3/..., claude-*);
+`model_map: {}` turns mapping off. A name the catalog already
 knows (key, alias, served name, HF id, variant) is never mapped, and a name no pattern
 matches keeps the resolver's normal behaviour. The mapping is always reported as a
 substitution note, so a caller can see what really ran.
@@ -14,7 +16,7 @@ from dataclasses import dataclass
 from fnmatch import fnmatchcase
 from typing import Any
 
-from .constants import DEFAULT_TARGET
+from .constants import DEFAULT_MODEL_MAP, DEFAULT_TARGET
 
 
 @dataclass(frozen=True)
@@ -30,12 +32,17 @@ def parse_map(value: Any) -> dict[str, str]:
     return dict(value)
 
 
-def map_name(model_map: Mapping[str, str], known: bool, name: str, default: str) -> Mapped | None:
+def effective(configured: Mapping[str, str] | None) -> Mapping[str, str]:
+    """The map in force: the configured one, or the built-in default when none is configured."""
+    return DEFAULT_MODEL_MAP if configured is None else configured
+
+
+def map_name(model_map: Mapping[str, str] | None, known: bool, name: str, default: str) -> Mapped | None:
     """The target for `name`, or None. `known` = the catalog already has `name`; `default` is
     the resident LLM that `@default` stands for. Matching ignores case."""
     if known:
         return None
-    for pattern, target in model_map.items():
+    for pattern, target in effective(model_map).items():
         if fnmatchcase(name.lower(), pattern.lower()):
             key = default if target == DEFAULT_TARGET else target
             return Mapped(key, f"'{name}' mapped to '{key}' by model_map pattern '{pattern}'")

@@ -53,3 +53,11 @@ def test_input_settings_from_file_and_environment(tmp_path):
     assert i.allow_urls is True and i.staging_dir == "/tmp/in" and s.comfy.output_dir == "/srv/comfy/output/"
     d = load(tmp_path).inputs
     assert d.allow_urls is False and d.types == ("png", "jpeg", "webp") and d.video_types == ("mp4", "mov", "webm")
+
+
+def test_the_scheduler_policy_defaults_to_fair_and_fifo_is_the_rollback(tmp_path):
+    assert settings.Settings().scheduler.policy == "fair"
+    assert settings.load(env={"BROKER_SCHEDULER_POLICY": "fifo", "BROKER_CONFIG": ""}).scheduler.policy == "fifo"
+    (tmp_path / "c.yaml").write_text("scheduler: {policy: lifo}\n")
+    with pytest.raises(ValueError, match=r"scheduler\.policy must be one of"):
+        settings.load(str(tmp_path / "c.yaml"), env={})

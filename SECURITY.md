@@ -49,7 +49,7 @@ single shared secret: give it only to clients you would let use the GPU freely.
   addresses: every connection (the first request and each redirect hop) resolves the host,
   refuses unless every address is globally routable — loopback, private, link-local (cloud
   metadata), shared and unspecified ranges are refused, and an IPv6 address that carries an
-  IPv4 one (IPv4-mapped, NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, IPv4-compatible
+  IPv4 one (IPv4-mapped, 6to4 `2002::/16`, Teredo (its client address), NAT64 `64:ff9b::/96` and `64:ff9b:1::/48`, IPv4-compatible
   `::a.b.c.d`) must pass for the embedded IPv4 address too — and then connects to that vetted
   address, so DNS rebinding between check and connect does not help. Environment proxies are
   ignored. Operators can allow specific networks with `inputs.url_allow_networks` (CIDRs);
@@ -106,6 +106,32 @@ single shared secret: give it only to clients you would let use the GPU freely.
 assets, compared with `hmac.compare_digest`. If `BROKER_TOKEN` is unset the server refuses
 to start (`gpu-broker serve`) and every request is rejected. There are no user accounts,
 roles or rate limits; put a reverse proxy in front if you need them.
+
+### The MCP server
+
+`/mcp` (with the `mcp` extra) takes the same credentials as the chat routes, checked before
+the MCP SDK sees the request; with none it answers 401. The guard then names the caller in an
+internal header and drops any copy the client sent, so a client key cannot pose as the main
+token. The key lookup runs off the event loop, and a refusal is a JSON-RPC error naming the
+status. Its tools submit jobs through the same path as `POST /v1/jobs` (input checks, limits,
+`inputs.allow_urls`), name only models that can run now (never a repository to download, by
+generation or chat), and show a client key only the jobs it owns, recorded by key id (names
+are not unique): another caller's job reads as missing, and `gpu_status` gives only a count of
+other callers' jobs. A client key cannot send `<slot>_url` inputs, which would have the broker
+fetch a caller-chosen address (inside `url_allow_networks` too), unless the operator sets
+`mcp.client_url_inputs`; the main token can, under `inputs.allow_urls`. A request body is capped at
+`mcp.max_body_bytes`. It is stateless (POST only), so nothing persists between calls.
+DNS-rebinding protection is off, since a browser page cannot add the bearer token. `gpu-broker
+mcp` reads its credential from the environment or connect's manifest, never a command line,
+and writes only MCP messages to stdout. It sends `$BROKER_TOKEN` only to the broker on this
+machine its config names (loopback, `server.port`), and no credential over plain http to a host
+that is not loopback or private; over plain http it resolves the name once and connects only to
+those checked addresses for the life of the relay, so a name that rebinds to a public address
+later never receives the key. Inline images are read through the broker's own ComfyUI client
+(`comfy.url`, `comfy.auth_env`), never a URL from a job record. `connect` writes the client key into the MCP entries
+it registers (`~/.claude.json`, `claude_desktop_config.json`, Codex's `config.toml`) and sets
+those files to mode 600; it never replaces a `gpu-broker` server the user defined, and lists
+every file it changed.
 
 ### Network exposure
 

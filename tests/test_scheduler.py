@@ -6,24 +6,31 @@ from gpu_broker.constants import JobState
 from tests.helpers import WAIT_S, done
 
 
-def submit(b, model, **body):
-    return b.submit({"model": model, "messages": [], **body}, "test")[0]
+def submit(b, model, priority="", **body):
+    return b.submit({"model": model, "messages": [], **body}, "test", priority=priority)[0]
 
 
-def test_background_calls_overlap_up_to_the_unreserved_slots(broker):
+def wait_inflight(broker, n):
+    end = time.monotonic() + WAIT_S
+    while len(broker.scheduler.pool.ids()) < n and time.monotonic() < end:
+        time.sleep(0.005)
+    time.sleep(0.05)   # long enough for a call that should not start to start
+    return len(broker.scheduler.pool.ids())
+
+
+def test_background_calls_overlap_up_to_the_unreserved_slots_and_interactive_ones_use_the_rest(broker):
     gate = broker.backends.chat_gate = threading.Event()
     m = broker.catalog.models["llama-8b"]
     slots = m["slots"] - m["reserved_interactive"]
-    jids = [submit(broker, "llama-8b") for _ in range(slots + 1)]
+    jids = [submit(broker, "llama-8b", "background") for _ in range(slots + 1)]
     try:
-        end = time.monotonic() + WAIT_S
-        while broker.scheduler.position(jids[-1]) != 0 and time.monotonic() < end:
-            time.sleep(0.005)
-        assert len(broker.scheduler.pool.ids()) == slots   # the extra call holds the GPU thread, waiting for a slot
-        assert broker.store.job(jids[-1])["state"] == JobState.QUEUED
+        assert wait_inflight(broker, slots) == slots
+        assert broker.store.job(jids[-1])["state"] == JobState.QUEUED and broker.scheduler.position(jids[-1]) == 1
+        chat = submit(broker, "llama-8b", "interactive")   # not stuck behind the waiting background call
+        assert wait_inflight(broker, slots + 1) == slots + 1 and chat in broker.scheduler.pool.ids()
     finally:
         gate.set()
-    assert all(done(broker, j)["state"] == JobState.DONE for j in jids)
+    assert all(done(broker, j)["state"] == JobState.DONE for j in [*jids, chat])
 
 
 def test_a_switch_waits_for_in_flight_calls(broker):
@@ -60,5 +67,5 @@ def test_a_failing_job_is_reported_and_the_thread_survives(broker):
 def test_restart_fails_orphans(broker, tmp_path):
     jid = broker.store.create_job("t", "llama-8b", {})
     broker.store.update_job(jid, state=JobState.RUNNING)
-    assert len(broker.store.fail_orphans()) == 1
+    assert len(broker.store.fail_orphans()[0]) == 1
     assert broker.store.job(jid)["state"] == JobState.FAILED

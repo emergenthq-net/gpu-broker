@@ -5,6 +5,71 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-04
+
+### Added
+- `gpu-broker connect` against a broker with cloud failover keeps Claude Code's and Codex's own
+  provider keys and adds the broker key as `x-gpu-broker-key`; other clients keep the broker key
+  alone. `gpu-broker clients` shows which keys each client sends. Connect asks
+  `GET /v1/upstreams/passthrough`, which a client key may read (only whether failover is on and
+  which APIs pass a client's key through); `/v1/upstreams` stays main-token only.
+- Failover: unstreamed requests go upstream as streams and are reassembled into the provider's
+  exact unstreamed answer, so a down provider fails over after `first_byte_s` and a long answer
+  is never cut off; a provider that refuses streams is asked again unstreamed.
+- Cloud first, local on failure (`upstreams:`, docs/failover.md): `claude-*` / `gpt-*` go to the
+  real provider with the client's own key and fall back to a local model on an outage, a hang,
+  5xx/529 or used-up quota or credit; client errors are returned as-is. A circuit breaker per
+  provider (and per key for quota) skips a failing provider at once and probes it back.
+  Answers carry `x-gpu-broker-served-by` and `x-gpu-broker-fallback`; a dashboard card shows
+  the breakers and failover events. The broker credential may be sent as `x-gpu-broker-key`.
+  A client's own key goes only to providers with `pass_client_key` (the official hosts by default).
+- An MCP server (the `mcp` extra): tools to list models, generate images and video, edit
+  images, animate an image, make 3D splats, poll and fetch jobs, ask the local LLM and read the
+  GPU. Streamable HTTP at `/mcp` behind the chat-route credentials (a client key sees only its
+  own jobs), and `gpu-broker mcp` over stdio. Long jobs return their id after `mcp.wait_s`;
+  small images come back inline. `gpu-broker connect` registers it with Claude Code, Claude
+  Desktop and Codex (`claude-code-mcp`, `claude-desktop`, `codex-mcp`). `/health` reports `mcp`.
+  A client key sees only jobs it owns (by key id) and sends files as base64 unless
+  `mcp.client_url_inputs`; tools take only models that can run now.
+- A video's length is the request param `num_frames`; `frames` is only the list of input views
+  (a number there is refused with a pointer to `num_frames`).
+- `comfy.auth_env`: a ComfyUI behind a Bearer token.
+- `connect` writes symlinked configs through, never replaces a user's own `gpu-broker` MCP
+  server, warns when a running Claude Code drops its entry, and lists the files it changed.
+- The GPU thread's queue is `fair` by default: interactive jobs first, then the requester that
+  has used the least expected GPU time, so one busy client no longer holds everyone else's jobs
+  behind its backlog.
+  - A call waiting for a pool slot no longer blocks the jobs behind it.
+  - `scheduler.policy: fifo` (env `BROKER_SCHEDULER_POLICY`) restores strict arrival order.
+  - Background jobs age into the interactive class after `scheduler.max_wait_s`.
+  - A switch never jumps a call waiting for a slot on the resident model for longer than
+    `scheduler.evict_wait_s` unless it is of a higher class.
+  - `/v1/jobs` takes `x-priority`; without it, a job's class follows `defaults.background_requesters`.
+- `gpu-broker replay <events.jsonl>`: replays a broker's event log through the queue rules in
+  simulated time and reports waits per requester, jobs/hour and residency churn, beside what the
+  broker did. Offline; the yardstick for scheduler changes.
+
+### Fixed
+- MCP `initialize` reports the installed gpu-broker version in `serverInfo` (it was empty).
+
+### Changed
+- With `fair`, a `/v1/jobs` LLM call from a requester not in `defaults.background_requesters`
+  (and without `x-priority: background`) is interactive, so it may use the slots kept by
+  `reserved_interactive`; before, only chat routes classified their calls.
+- With `fair`, a requester in `defaults.background_requesters` can only lower its class with
+  `x-priority` (or `interactive` in a job), not raise it. `scheduler.may_claim_interactive`
+  lists who may claim interactive (default: everyone not in `background_requesters`). `fifo`
+  keeps the old rule.
+- While quiesced (`/v1/admin/quiesce`), new jobs, chats, embeddings and sessions get HTTP 503
+  with `Retry-After` (`intervals.quiesced_retry_s`, default 5) and `x-should-retry: true`,
+  instead of being queued and then failed as orphans by the restart.
+- A restart re-queues jobs the previous process had queued but not started, in their original
+  order and with their staged input files (event `job.requeued`).
+  - Jobs that had started, and direct chats, are still failed as orphaned.
+  - A re-queued job fails with "input files missing" if its files are gone, and with
+    "model '<key>' no longer in catalog" if its model left the catalog; a re-queued interactive
+    session fails with "session expired by restart".
+
 ## [0.4.0] - 2026-10-03
 
 ### Added
@@ -112,7 +177,8 @@ Initial public release.
 - Host drivers: systemd, Docker, and systemd units in Proxmox LXCs via a forced-command script.
 - SQLite job store and JSONL event log.
 
-[Unreleased]: https://github.com/emergenthq-net/gpu-broker/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/emergenthq-net/gpu-broker/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/emergenthq-net/gpu-broker/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.2...v0.4.0
 [0.3.2]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.1...v0.3.2
 [0.3.1]: https://github.com/emergenthq-net/gpu-broker/compare/v0.3.0...v0.3.1

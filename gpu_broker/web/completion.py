@@ -23,13 +23,14 @@ from fastapi import Request
 
 from ..backends import SSE_DATA, SSE_JSON
 from ..broker import Broker, validate_request
-from ..chat import Lease, apply_variant, is_interactive
-from ..constants import ERR_EVENT, ERR_JOB, INTERACTIVE_KEY, PRIORITY_HEADER, REQUESTER_HEADER, TERMINAL, JobState, Kind
+from ..chat import Lease, apply_variant
+from ..constants import ERR_EVENT, ERR_JOB, PRIORITY_HEADER, REQUESTER_HEADER, TERMINAL, JobState, Kind
 from ..modelmap import map_name
 from ..resolve import lookup
-from .jobs import client
+from .jobs import requester as requester_of
 
 MAX_COMPLETION_TOKENS, MAX_TOKENS = "max_completion_tokens", "max_tokens"
+LOCAL = "local"   # x_broker.served_by for an answer from this broker (upstream.py marks hosted ones)
 
 
 @dataclass
@@ -43,11 +44,18 @@ class Outcome:
 
 
 class ChatFailed(Exception):
-    """The call could not be answered; `status` is the HTTP status to report."""
+    """The call could not be answered; `status` is the HTTP status to report. `hosted` = the
+    caller asked for a hosted model name (so a hosted fallback may answer instead)."""
 
     def __init__(self, status: HTTPStatus, message: str, meta: Mapping[str, Any]) -> None:
         super().__init__(message)
         self.status, self.message, self.meta = status, message, dict(meta)
+        self.hosted = False
+
+
+class GoHosted(Exception):
+    """Raised instead of queueing when the caller allowed a hosted fallback and the local
+    model would first need a switch (the GPU is busy with something else)."""
 
 
 def echo_model(line: str, requested: str) -> str:
@@ -83,19 +91,33 @@ def finished(result: Mapping[str, Any], requested: str, mapped: bool, meta: Mapp
     return {**result, **({"model": requested} if mapped else {}), "x_broker": dict(meta)}
 
 
-def run(broker: Broker, body: Mapping[str, Any], request: Request, stream: bool) -> Outcome:
+def run(broker: Broker, body: Mapping[str, Any], request: Request, stream: bool, may_forward: bool = False) -> Outcome:
+    """`may_forward`: a hosted fallback is available, so an interactive call on a hosted name
+    that would wait for a model switch raises GoHosted instead of queueing."""
     validate_request(body)
-    requester = request.headers.get(REQUESTER_HEADER) or client(request)
+    requester = requester_of(request, request.headers.get(REQUESTER_HEADER))
     requested, body, note = prepare(broker, body)
-    interactive = is_interactive(broker.catalog, request.headers.get(PRIORITY_HEADER, ""), requester)
-    lease = broker.chat.open(body, requester, requested, note) if interactive else None
-    if lease is not None:
-        return _direct(broker, lease, body, stream, requested, note)
-    return queued(broker, {**body, INTERACTIVE_KEY: interactive}, requester, requested, note)
+    hosted = note is not None
+    priority, classes = request.headers.get(PRIORITY_HEADER, ""), broker.scheduler.classes
+    interactive = classes.of_request(broker.catalog, body, priority, requester)
+    try:
+        lease = broker.chat.open(body, requester, requested, note) if interactive else None
+        if lease is not None:
+            return _direct(broker, lease, body, stream, requested, note)
+        target = lookup(broker.catalog.data, body.get("model") or broker.catalog.defaults["resident"])
+        if may_forward and hosted and interactive and broker.settings.fallback.when_switching \
+                and target != broker.scheduler.pool.resident:
+            raise GoHosted(f"'{target}' is not loaded; the GPU would have to switch first")
+        return queued(broker, classes.for_queue(body, interactive), requester, requested, note, priority)
+    except ChatFailed as e:
+        e.hosted = hosted
+        raise
+
 
 
 def _direct(broker: Broker, lease: Lease, body: dict[str, Any], stream: bool, requested: str, note: str | None) -> Outcome:
-    meta = {"job": lease.jid, "requested": requested, "used": lease.key, "direct": True, "substitution": lease.substitution}
+    meta = {"job": lease.jid, "requested": requested, "used": lease.key, "direct": True, "substitution": lease.substitution,
+            "served_by": LOCAL}
     mapped = note is not None
     if not stream:
         try:
@@ -121,9 +143,10 @@ def _direct(broker: Broker, lease: Lease, body: dict[str, Any], stream: bool, re
     return outcome
 
 
-def queued(broker: Broker, body: dict[str, Any], requester: str, requested: str, note: str | None) -> Outcome:
+def queued(broker: Broker, body: dict[str, Any], requester: str, requested: str, note: str | None,
+           priority: str = "") -> Outcome:
     """Submit as a job and wait for it (chat that could not go direct, and embeddings)."""
-    jid, info = broker.submit(body, requester, requested, note)
+    jid, info = broker.submit(body, requester, requested, note, priority)
     meta = {"job": jid, **info}
     if info.get("error"):
         raise ChatFailed(HTTPStatus.SERVICE_UNAVAILABLE, info["error"], meta)
@@ -132,6 +155,7 @@ def queued(broker: Broker, body: dict[str, Any], requester: str, requested: str,
     if state != JobState.DONE:
         code = HTTPStatus.BAD_GATEWAY if state in TERMINAL else HTTPStatus.GATEWAY_TIMEOUT
         raise ChatFailed(code, j.get("error") or f"still {state}", meta)
-    meta = {"job": jid, "requested": requested, "used": j["resolved"], "substitution": j.get("substitution")}
+    meta = {"job": jid, "requested": requested, "used": j["resolved"], "substitution": j.get("substitution"),
+            "served_by": LOCAL}
     mapped = note is not None
     return Outcome(requested, meta, mapped, result=finished(j["result"], requested, mapped, meta))

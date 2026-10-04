@@ -16,6 +16,7 @@ comfy:
   url: http://127.0.0.1:8188     # as the broker reaches ComfyUI
   public_url: null               # as browsers reach it (dashboard links, job output URLs); default = url
   unit: comfyui                  # started if ComfyUI is found down; null = never start it
+  auth_env: ""                   # ComfyUI behind auth: an UPSTREAM_TOKEN_* env var holding its Bearer token
 
 driver:
   kind: systemd
@@ -30,6 +31,11 @@ timeouts:                 # seconds; every key and its default: gpu_broker/setti
   llm_start_s: 240        # an LLM server must pass its health check within this
 intervals:
   gpu_sample_s: 2         # local GPU sampler period
+scheduler:
+  policy: fair            # interactive first, then the lightest requester; `fifo` = arrival order (rollback)
+  max_wait_s: 3600        # a background job waiting this long counts as interactive
+  evict_wait_s: 600       # a call waiting for a slot holds off a switch at most this long
+  # may_claim_interactive: [alice, webui]   # who may raise its class; default: anyone not background
 
 inputs:                   # input files for image-to-video, image-edit and exec jobs
   max_bytes: 20971520     # per image, decoded
@@ -41,6 +47,14 @@ inputs:                   # input files for image-to-video, image-edit and exec 
   url_allow_networks: []  # CIDRs <slot>_url may reach besides public addresses and comfy.url, e.g. [192.168.1.0/24]
   staging_dir: /var/lib/gpu-broker/inputs
 
+mcp:                      # the MCP server at /mcp; needs `pip install 'gpu-broker[mcp]'` (else not served)
+  enabled: true
+  wait_s: 45              # a generate tool waits this long, then returns the job id to poll
+  inline_max_bytes: 1048576   # finished images this small also come back inline
+  inline_max_images: 4
+  max_body_bytes: 67108864    # one /mcp request (base64 inputs); larger files go by URL
+  client_url_inputs: false    # let client keys send <slot>_url inputs (the broker fetches them); the main token always may
+
 ui:
   gpu_label: NVIDIA GPU               # dashboard GPU card title
   resident_label: the default model   # who holds the GPU when nothing else is running
@@ -50,17 +64,36 @@ ui:
     llama-server: {label: llama.cpp, color: "#3b5bdb"}
     comfyui: {label: ComfyUI, color: "#e8590c"}
 
-# Drop-in replacement for hosted APIs (docs/drop-in.md): an app written for ChatGPT or Claude
-# asks for a hosted model by name; these globs say which catalog model answers instead.
-# First match wins, case-insensitive; "@default" = the catalog's resident LLM. Names the
-# catalog already knows are never mapped. Every response reports what ran (x_broker.used).
+# Drop-in replacement for hosted APIs (docs/drop-in.md). With no model_map here, hosted chat
+# names map to the resident LLM: gpt-*, chatgpt-*, o1/o3/o4..., claude-*. Set one to change
+# that (first match wins, case-insensitive; "@default" = the resident LLM; names the catalog
+# knows are never mapped), or `model_map: {}` to turn mapping off.
 # Env override: BROKER_MODEL_MAP='{"gpt-*": "@default"}' (JSON).
-model_map:
-  # "gpt-4o-mini": llama-3.1-8b-precise     # a specific name first, before its general pattern
-  "gpt-*": "@default"
-  "chatgpt-*": "@default"
-  "o1*": "@default"
-  "o3*": "@default"
-  "o4*": "@default"
-  "claude-*": "@default"
-  # "text-embedding-*": my-embedder         # a catalog model with caps: [embed]
+# model_map:
+#   "gpt-4o-mini": llama-3.1-8b-precise   # a specific name first, before its general pattern
+#   "gpt-*": "@default"
+#   "claude-*": "@default"
+#   "text-embedding-*": my-embedder       # a catalog model with caps: [embed]
+
+# Optional hosted fallback, off by default: when the local side cannot serve a hosted model
+# name (GPU busy with another model, a failed call, a hosted-only feature), forward it to the
+# real provider with YOUR key, read from the env var named here (never from this file, never
+# logged). Every response says which side answered (header x-broker-served-by).
+fallback:
+  enabled: false                          # or BROKER_FALLBACK=1
+  openai_key_env: UPSTREAM_OPENAI_API_KEY
+  anthropic_key_env: UPSTREAM_ANTHROPIC_API_KEY
+  when_switching: true                    # also when the call would wait for a model switch
+
+# Optional cloud-first failover (docs/failover.md), off by default: routed names go to the real
+# provider first, with the client's own key passed through, and to the local model at the end
+# of the chain when the provider fails (no internet, outage, 5xx/529, quota or credit used up).
+# upstreams:
+#   providers:
+#     anthropic: {url: https://api.anthropic.com, api: anthropic}
+#     openai:    {url: https://api.openai.com, api: openai}   # key_env: UPSTREAM_OPENAI_API_KEY (optional)
+#     # Only official hosts get a client's own key (pass_client_key); others use their key_env:
+#     openrouter: {url: https://openrouter.ai/api, api: openai, key_env: UPSTREAM_OPENROUTER_API_KEY}
+#   routes:
+#     "claude-*": [anthropic, llama-3.1-8b]
+#     "gpt-*":    [openai, llama-3.1-8b]

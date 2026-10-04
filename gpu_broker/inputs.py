@@ -15,7 +15,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import TYPE_CHECKING, Any
 
-from .constants import FRAMES, INPUT_SLOTS, URL_SLOTS, URL_SUFFIX, InputNeed
+from .constants import FRAMES, INPUT_SLOTS, NUM_FRAMES, URL_SLOTS, URL_SUFFIX, InputNeed
 
 if TYPE_CHECKING:   # catalog validation imports this module
     from .catalog import Model
@@ -38,6 +38,8 @@ def slots(body: Mapping[str, Any]) -> frozenset[str]:
         if inline or url:
             given.add(slot)
     frames = body.get(FRAMES)
+    if isinstance(frames, int) and not isinstance(frames, bool):
+        raise ValueError(f"`{FRAMES}` is the list of input views; give a video's length in frames as `{NUM_FRAMES}`")
     if frames is not None:
         if not (isinstance(frames, list) and frames and all(isinstance(f, str) and f for f in frames)):
             raise ValueError(f"`{FRAMES}` must be a non-empty list of base64 images")

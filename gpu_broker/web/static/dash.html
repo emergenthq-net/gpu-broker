@@ -68,6 +68,21 @@
       <b>queue wait</b><span id="kQ">–</span><b>model switch</b><span id="kSw">–</span></div>
       <div class="mute" id="kTok" style="margin-top:6px"></div></div>
   </div>
+  <div class="card wide"><h2>Connect apps</h2>
+    <div class="mute" style="margin-bottom:8px">Point AI apps at this broker. Every change is backed up; Disconnect restores it exactly.</div>
+    <table><thead><tr><th>app (on this machine)</th><th>status</th><th>where</th><th></th></tr></thead><tbody id="apps"></tbody></table>
+    <p><button data-action="app-invite">Connect another machine…</button></p>
+    <div id="invite" hidden><code id="inviteCmd"></code><div class="mute" id="inviteNote"></div></div>
+    <pre id="appsOut" class="mute"></pre>
+    <h2 style="margin-top:10px">Client keys</h2>
+    <table><thead><tr><th>name</th><th>key</th><th>created</th><th>last used</th><th></th></tr></thead><tbody id="keys"></tbody></table>
+  </div>
+  <div class="card wide" id="upCard" hidden><h2>Cloud upstreams</h2>
+    <div class="mute" id="upRoutes" style="margin-bottom:8px"></div>
+    <table><thead><tr><th>provider</th><th>breaker</th><th>next probe</th><th>keys out of quota</th><th>last failure</th></tr></thead><tbody id="upProv"></tbody></table>
+    <h2 style="margin-top:10px">Failover events</h2>
+    <table><thead><tr><th>when</th><th>event</th><th>what</th><th>why</th></tr></thead><tbody id="upEv"></tbody></table>
+  </div>
   <div class="card wide"><h2>Queue</h2><table><thead><tr><th>#</th><th>job</th><th>requested</th>
     <th>using</th><th>from</th><th>waiting</th></tr></thead><tbody id="q"></tbody></table></div>
   <div class="card wide"><h2>Per model (24 h)</h2><table><thead><tr><th>model</th><th>done</th>
@@ -83,5 +98,7 @@
 <script src="/dash/live.js"></script>
 <script src="/dash/imagejob.js"></script>
 <script src="/dash/index.js"></script>
+<script src="/dash/connect.js"></script>
+<script src="/dash/upstreams.js"></script>
 </body>
 </html>

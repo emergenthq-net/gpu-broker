@@ -12,19 +12,22 @@ from http import HTTPStatus
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse
 
 from ..broker import Broker, validate_request
 from ..catalog import Catalog
-from ..chat import is_interactive
-from ..constants import EMBED_CAP, EMBED_KEY, INTERACTIVE_KEY, PRIORITY_HEADER, REQUESTER_HEADER, Kind
+from ..constants import EMBED_CAP, EMBED_KEY, PRIORITY_HEADER, REQUESTER_HEADER, Kind
 from ..modelmap import joined, map_name
 from ..resolve import lookup, runnable
 from . import completion
-from .jobs import client
+from .errors import message
+from .jobs import requester as requester_of
+from .upstream import LOCAL, Api, Upstream, served
 
 NO_EMBED_MODEL = "no embedding model is configured: add a catalog model with `caps: [embed]`"
 NOT_READY = "no embedding model is ready to run"
 NOT_FOUND_CODE = "model_not_found"
+PATH = "/v1/embeddings"
 
 
 def embed_models(catalog: Catalog) -> list[str]:
@@ -50,21 +53,27 @@ def pick(broker: Broker, requested: str) -> tuple[str, str | None]:
     return best, joined(mapped.note if mapped else None, f"'{requested}' is not an embedding model; using '{best}'")
 
 
-def router(broker: Broker) -> APIRouter:
+def router(broker: Broker, upstream: Upstream) -> APIRouter:
     r = APIRouter()
 
-    @r.post("/v1/embeddings")
-    def embeddings(body: dict[str, Any], request: Request) -> dict[str, Any]:
+    @r.post(PATH, response_model=None)
+    def embeddings(body: dict[str, Any], request: Request) -> Any:
         validate_request(body)
-        requester = request.headers.get(REQUESTER_HEADER) or client(request)
+        requester = requester_of(request, request.headers.get(REQUESTER_HEADER))
         requested = body.get("model") or ""
-        key, note = pick(broker, requested)
-        interactive = is_interactive(broker.catalog, request.headers.get(PRIORITY_HEADER, ""), requester)
-        job = {**body, "model": key, "kind": Kind.LLM, "caps": [EMBED_CAP], EMBED_KEY: True, INTERACTIVE_KEY: interactive}
         try:
-            out = completion.queued(broker, job, requester, requested or key, note)
+            key, note = pick(broker, requested)
+        except HTTPException as e:   # no local embedding model: the provider may answer
+            if requested and upstream.available(Api.OPENAI):
+                return upstream.forward(Api.OPENAI, PATH, body, request, message(e.detail))
+            raise
+        priority, classes = request.headers.get(PRIORITY_HEADER, ""), broker.scheduler.classes
+        job = classes.for_queue({**body, "model": key, "kind": Kind.LLM, "caps": [EMBED_CAP], EMBED_KEY: True},
+                                classes.of_request(broker.catalog, body, priority, requester))
+        try:
+            out = completion.queued(broker, job, requester, requested or key, note, priority)
         except completion.ChatFailed as e:
             raise HTTPException(e.status, {"error": e.message, "x_broker": e.meta}) from None
-        return out.result or {}
+        return JSONResponse(out.result or {}, headers=served(LOCAL))
 
     return r

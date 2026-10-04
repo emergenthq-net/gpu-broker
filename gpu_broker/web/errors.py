@@ -19,10 +19,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse, Response
 
 from ..constants import ANTHROPIC_VERSION_HEADER
+from ..quiesce import Quiesced
 from . import anthropic_resp
 
 ANTHROPIC_PATHS = frozenset({"/v1/messages"})
-OPENAI_PATHS = frozenset({"/v1/chat/completions", "/v1/embeddings", "/v1/models"})
+OPENAI_PATHS = frozenset({"/v1/chat/completions", "/v1/responses", "/v1/embeddings", "/v1/models"})
 MODELS_PATH = "/v1/models"
 OPENAI_TYPES: dict[int, str] = {HTTPStatus.UNAUTHORIZED: "authentication_error", HTTPStatus.NOT_FOUND: "not_found_error",
                                 HTTPStatus.TOO_MANY_REQUESTS: "rate_limit_error"}
@@ -74,6 +75,12 @@ def install(app: FastAPI) -> None:
     async def invalid(request: Request, e: RequestValidationError) -> Response:
         return (shaped(request, HTTPStatus.UNPROCESSABLE_ENTITY, jsonable_encoder(e.errors()))
                 or await request_validation_exception_handler(request, e))
+
+    @app.exception_handler(Quiesced)
+    async def quiesced(request: Request, e: Quiesced) -> JSONResponse:
+        r = shaped(request, HTTPStatus.SERVICE_UNAVAILABLE, str(e)) or JSONResponse({"detail": str(e)}, status_code=HTTPStatus.SERVICE_UNAVAILABLE)
+        r.headers.update({"Retry-After": str(e.retry_after_s), "x-should-retry": "true"})   # both SDKs honour these
+        return r
 
     @app.exception_handler(ValueError)
     async def bad_request(request: Request, e: ValueError) -> JSONResponse:

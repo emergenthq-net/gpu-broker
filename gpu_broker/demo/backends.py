@@ -111,6 +111,9 @@ class SimBackends:
     def comfy_upload(self, name: str, data: bytes, kind: str) -> str:
         return name
 
+    def comfy_view(self, name: str, subfolder: str, kind: str, cap: int) -> bytes | None:
+        return None   # the demo renders no files
+
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]:
         m = self.catalog.models[key]
         t0 = time.monotonic()

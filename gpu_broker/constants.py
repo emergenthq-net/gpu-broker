@@ -15,8 +15,14 @@ INTERACTIVE_KEY = "interactive"           # job payload flag: a person is waitin
 EMBED_KEY = "x_broker_embed"              # job payload flag: an embeddings call, not a chat completion
 EMBED_CAP = "embed"                       # catalog cap of a model that serves /v1/embeddings
 API_KEY_HEADER = "x-api-key"              # the Anthropic SDK's token header (Bearer is the OpenAI SDK's)
+PASSTHROUGH_PATH = "/v1/upstreams/passthrough"   # model scope: which APIs pass a client's own key through
+BROKER_KEY_HEADER = "x-gpu-broker-key"    # a broker credential beside a cloud key the client passes through
 ANTHROPIC_VERSION_HEADER = "anthropic-version"   # sent by Anthropic clients; selects Anthropic shapes
 DEFAULT_TARGET = "@default"               # model_map target meaning the catalog's resident (default) LLM
+# model_map when the config sets none: hosted chat names -> the resident LLM. `model_map: {}` turns it off.
+DEFAULT_MODEL_MAP = {"gpt-*": DEFAULT_TARGET, "chatgpt-*": DEFAULT_TARGET, "o[0-9]*": DEFAULT_TARGET,
+                     "claude-*": DEFAULT_TARGET}
+SERVED_BY_HEADER = "x-broker-served-by"   # local | hosted, on every drop-in response
 # Request fields the broker consumes itself; never forwarded to a model server.
 BROKER_FIELDS = frozenset({"model", "stream", "kind", "caps", "requester", "wait", "wait_s",
                            INTERACTIVE_KEY, SESSION_KEY, EMBED_KEY})
@@ -26,6 +32,9 @@ AUTH_SCHEME = "Bearer"
 # `frames` is a list of inline images.
 IMAGE_SLOTS = ("image", "end_image")    # start frame / edit source, and an optional end frame
 FRAMES, VIDEO = "frames", "video"        # several views of a scene, or one video of it
+# A video's length in frames is the request key `num_frames`: `frames` is the input slot above.
+# Templates read it as their own `frames` option (templates.build maps it).
+NUM_FRAMES, TEMPLATE_FRAMES = "num_frames", "frames"
 INPUT_SLOTS = (*IMAGE_SLOTS, FRAMES, VIDEO)
 URL_SLOTS = (*IMAGE_SLOTS, VIDEO)        # slots that may come as `<slot>_url`
 URL_SUFFIX = "_url"
@@ -85,6 +94,10 @@ class Priority(StrEnum):
 
 class Kind(StrEnum):
     LLM = "llm"
+    IMAGE = "image"
+    VIDEO = "video"
+    THREE_D = "3d"
+    UI = "ui"       # a front end used through sessions, never a job
     UNKNOWN = "unknown"     # kind of a registered repo when the request named none
 
 
@@ -107,6 +120,7 @@ class Event(StrEnum):
     RESUME = "broker.resume"
     WORKER_ERROR = "worker.error"
     JOB_SUBSTITUTED = "job.substituted"
+    JOB_REQUEUED = "job.requeued"   # queued when the previous process stopped; queued again at start
     JOB_DIRECT = "job.direct"   # an interactive chat served by the resident LLM without queueing
     DOWNLOAD_QUEUED = "download.queued"
     RES_STOP = "residency.stop"
@@ -122,6 +136,10 @@ class Event(StrEnum):
     EXEC_UNCHECKED = "exec.recipe_unchecked"   # its recipe could not be read at startup (checked per job)
     EXEC_GPU_HELD = "exec.gpu_held"            # a recipe may still run: no job runs until the hold clears
     GPU_HELD_CLEARED = "exec.gpu_held_cleared"  # by a clean that confirmed the job gone, or an operator
+    UPSTREAM_FAILOVER = "upstream.failover"   # a cloud request answered further down its chain
+    UPSTREAM_OPEN = "upstream.open"           # a provider's breaker opened: requests skip it
+    UPSTREAM_QUOTA = "upstream.quota"         # a credential ran out of quota or credit
+    UPSTREAM_CLOSED = "upstream.closed"       # the provider answers again: back to the cloud
 
 
 RESIDENCY_EVENT_PREFIX = "residency."

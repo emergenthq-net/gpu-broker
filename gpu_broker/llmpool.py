@@ -48,6 +48,10 @@ class LlmPool:
         with self._cv:
             return self._resident
 
+    def inflight(self) -> int:
+        with self._cv:
+            return len(self._inflight)
+
     def busy(self) -> bool:
         with self._cv:
             return bool(self._inflight)

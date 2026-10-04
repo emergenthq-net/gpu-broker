@@ -103,7 +103,7 @@ def test_the_broker_serves_without_a_gpu_and_shows_why(tmp_path):
     b = Broker(s, env={}, driver=d, backends=FakeBackends(d))
     with TestClient(create_app(b, TOKEN)) as c:
         h = {"Authorization": f"Bearer {TOKEN}"}
-        assert len(b._threads) == 3                       # started anyway: scheduler, downloads, sampler
+        assert len(b._threads) == 4                       # started anyway: scheduler, downloads, sampler, costs
         assert c.get("/v1/gpu", headers=h).json() == {"error": "no GPU found"}
         assert c.get("/v1/status", headers=h).status_code == 200
         assert wait_for(lambda: c.get("/v1/metrics", headers=h).json()["gpu_error"] == "no GPU found")
