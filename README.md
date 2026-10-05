@@ -52,7 +52,8 @@ It also fits:
 - **Puts the chat model back by itself** once the card has been quiet for a couple of minutes.
 - **Keeps people ahead of batch work.** Your own chats skip the queue and stream token by token.
 - **Shows what is happening.** A web dashboard shows what is loaded, what runs, what waits, and every switch.
-- **Speaks the OpenAI and Anthropic APIs,** so Open WebUI and the official SDKs connect unchanged.
+- **Speaks the OpenAI (Chat Completions and Responses) and Anthropic APIs,** so Open WebUI, the official SDKs and the Codex CLI connect unchanged.
+- **Cloud first, local when it fails (optional).** With `upstreams:` routes, `claude-*` and `gpt-*` go to the real provider with the client's own key, and fall back to a local model on an outage, a hung connection or used-up quota; a circuit breaker sends them back when the provider recovers ([docs/failover.md](docs/failover.md)).
 
 ## See it
 
@@ -188,13 +189,25 @@ More examples and every route: [docs/api.md](docs/api.md).
 
 ## Connect your apps
 
-- **Today:** gpu-broker answers both the OpenAI and the Anthropic API.
-  - Apps and SDKs built for either work by changing only the base URL and key.
-  - Details: [docs/drop-in.md](docs/drop-in.md).
-- **Coming:** `gpu-broker connect` (or **Connect apps** on the dashboard).
-  - It finds the tools on your machine (your shell, Continue, Cline, Aider, Codex, Open WebUI)
-    and points them at your local model. No settings to edit.
-  - `gpu-broker disconnect` puts everything back.
+```bash
+gpu-broker connect --url http://gpu-host:8095     # or click Connect apps on the dashboard
+```
+
+- **`gpu-broker connect`** finds the tools on your machine (your shell, Continue, Cline, Aider,
+  Codex, Open WebUI) and points them at your local model. No settings to edit.
+  - `--dry-run` shows the plan first; `gpu-broker clients` lists what was found and connected.
+  - `gpu-broker disconnect` puts everything back, from backups taken before the first change.
+- **Any other app** built for the OpenAI (Chat Completions or Responses) or Anthropic API works
+  by changing only the base URL and key.
+- Details: [docs/drop-in.md](docs/drop-in.md).
+
+### Use it from Claude, ChatGPT or Codex (MCP)
+
+- With the `mcp` extra (`pip install 'gpu-broker[mcp]'`), the broker is also an MCP server:
+  assistants can generate and edit images, make videos and 3D scenes, and ask the local model.
+- Remote clients and ChatGPT connectors use `/mcp` on the broker; apps that launch a command use
+  `gpu-broker mcp`. `gpu-broker connect` registers it in Claude Code, Claude Desktop and Codex.
+- Details: [docs/mcp.md](docs/mcp.md).
 
 ## Documentation
 
@@ -205,6 +218,8 @@ More examples and every route: [docs/api.md](docs/api.md).
 | [docs/exec-recipes.md](docs/exec-recipes.md) | command-line models (`runner: exec`): recipes, timeouts, GPU holds |
 | [docs/api.md](docs/api.md) | every route, request fields, headers |
 | [docs/drop-in.md](docs/drop-in.md) | using it in place of the OpenAI and Anthropic APIs |
+| [docs/failover.md](docs/failover.md) | cloud first, local on failure: routes, the circuit breaker, what fails over |
+| [docs/mcp.md](docs/mcp.md) | the MCP server: tools, `/mcp` and `gpu-broker mcp`, registering it |
 | [docs/hardware.md](docs/hardware.md) | host drivers, supported GPUs, choosing the card |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | module layout and invariants |
 | [SECURITY.md](SECURITY.md), [docs/threat-model.md](docs/threat-model.md) | security model and threat model |
@@ -242,13 +257,20 @@ sequenceDiagram
     U->>B: next chat is served directly again
 ```
 
-- **One GPU thread.** Models switch only between jobs, never mid-job.
+- **One GPU thread, fair order.** Models switch only between jobs, never mid-job.
+  - Waiting jobs go interactive first, then by requester: whoever has used the least expected GPU time goes next.
+  - Each requester's jobs keep their order, and an idle caller cannot bank credit.
+  - A background job that has waited `scheduler.max_wait_s` (default 1 h) counts as interactive.
+  - `scheduler.policy: fifo` restores strict arrival order.
 - **Every LLM call holds a pool slot.** Before a switch, the pool closes and in-flight calls finish.
 - **People first.** Background calls may fill `slots - reserved_interactive` slots; people may use them all.
 - **Safe switches.** ComfyUI frees its weights before an LLM starts; the LLM stops before a ComfyUI job.
   - Health is re-checked, not assumed, since someone else may stop things.
 - **Idle restore.** After `idle_restore_s` with an empty queue, `defaults.resident` comes back.
 - **Log.** Every state change is a SQLite row and a JSONL line.
+- **Replay.** `gpu-broker replay /var/log/gpu-broker/events.jsonl` runs your own log through the queue
+  rules in simulated time and prints the wait per requester and the residency switches, next to what
+  the broker really did. It contacts nothing; it is how scheduler changes are measured.
 
 ### Compared with llama-swap
 
@@ -323,10 +345,9 @@ Details: [SECURITY.md](SECURITY.md). Threat model: [docs/threat-model.md](docs/t
 
 ## Roadmap
 
-- A demand- and priority-aware scheduler, replacing strict FIFO for queued work.
+- Soft preemption and bounded same-model batching for the queue.
 - GPU readings for more vendors, and more than one GPU per host.
 - Wiring downloaded files into ComfyUI from the API.
-- `gpu-broker connect`.
 
 ## Contributing
 

@@ -17,35 +17,36 @@ PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 32
 
 @pytest.mark.parametrize("ip", ["127.0.0.1", "10.1.2.3", "172.16.0.9", "192.168.1.5", "169.254.169.254",
                                 "0.0.0.0", "100.64.0.1", "::1", "fe80::1%eth0", "fc00::1", "::",
-                                "::ffff:127.0.0.1", "::ffff:10.1.2.1",
-                                "64:ff9b::a01:201", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe",   # NAT64 (/96)
-                                "64:ff9b:1::a01:201", "::a00:1", "::7f00:1", "::a9fe:a9fe"])   # NAT64 local, v4-compat
+                                "::ffff:127.0.0.1", "::ffff:10.9.0.1",
+                                "64:ff9b::a09:1", "64:ff9b::7f00:1", "64:ff9b::a9fe:a9fe",   # NAT64 (/96)
+                                "64:ff9b:1::a09:1", "::a09:1", "::7f00:1", "::a9fe:a9fe"])   # NAT64 local, v4-compat
 def test_non_public_addresses_are_refused(ip):
     assert not netguard.allowed(ip, ())
 
 
 def test_public_addresses_and_allowlisted_networks_pass():
     assert netguard.allowed("93.184.215.14", ()) and netguard.allowed("2606:4700::1", ())
-    lan = Inputs(url_allow_networks=("10.1.2.0/24",)).url_allow_networks
-    assert netguard.allowed("10.1.2.158", lan) and not netguard.allowed("10.1.3.1", lan)
-    assert netguard.allowed("::ffff:10.1.2.7", lan)
+    lan = Inputs(url_allow_networks=("192.0.2.0/24",)).url_allow_networks   # TEST-NET-1: refused unless listed
+    assert not netguard.allowed("192.0.2.158", ())
+    assert netguard.allowed("192.0.2.158", lan) and not netguard.allowed("198.51.100.1", lan)
+    assert netguard.allowed("::ffff:192.0.2.7", lan)
 
 
 def test_embedded_ipv4_must_pass_too():
     assert netguard.allowed("64:ff9b::5db8:d70e", ())   # NAT64 of 93.184.215.14: both are public
     assert netguard.allowed("::5db8:d70e", ())          # IPv4-compatible form of the same
-    assert str(netguard.embedded(ipaddress.ip_address("64:ff9b::a01:201"))) == "10.1.2.1"
+    assert str(netguard.embedded(ipaddress.ip_address("64:ff9b::a09:1"))) == "10.9.0.1"
     assert netguard.embedded(ipaddress.ip_address("::1")) is None   # loopback, not ::0.0.0.1
     assert netguard.embedded(ipaddress.ip_address("2606:4700::1")) is None
     local64 = Inputs(url_allow_networks=("64:ff9b:1::/48",)).url_allow_networks
-    assert not netguard.allowed("64:ff9b:1::a01:201", local64)          # outer allowed, inner 10.1.2.1 not
+    assert not netguard.allowed("64:ff9b:1::a09:1", local64)          # outer allowed, inner 10.9.0.1 not
     assert netguard.allowed("64:ff9b:1::5db8:d70e", local64)
     assert not netguard.allowed("64:ff9b:1::5db8:d70e", ())   # inner public, outer (local NAT64) not
 
 
 def test_endpoints_come_from_service_urls():
-    assert netguard.endpoints("http://10.1.2.158:8188", "https://Comfy.LAN/x", "http://h") == {
-        ("10.1.2.158", 8188), ("comfy.lan", 443), ("h", 80)}
+    assert netguard.endpoints("http://192.0.2.158:8188", "https://Comfy.LAN/x", "http://h") == {
+        ("192.0.2.158", 8188), ("comfy.lan", 443), ("h", 80)}
     assert netguard.endpoints("", "ftp://h/x") == frozenset()
 
 
@@ -59,7 +60,7 @@ def resolver(*ips):
     return resolve
 
 
-@pytest.mark.parametrize("ips", [("10.1.2.1",), ("93.184.215.14", "127.0.0.1"), ()])
+@pytest.mark.parametrize("ips", [("10.9.0.1",), ("93.184.215.14", "127.0.0.1"), ()])
 def test_connector_refuses_unless_every_answer_is_allowed_and_never_connects(ips, monkeypatch):
     monkeypatch.setattr(socket, "create_connection", lambda *a, **k: pytest.fail("must not connect"))
     with pytest.raises(netguard.Refused):
@@ -88,16 +89,16 @@ def test_connector_connects_to_the_vetted_address_within_the_time_left(monkeypat
 
 
 def test_the_brokers_own_comfy_is_reachable_only_for_output_views_on_its_addresses(monkeypatch):
-    """comfy.url names comfy.lan (10.1.2.158); the exception follows its resolved address and port."""
+    """comfy.url names comfy.lan (192.0.2.158); the exception follows its resolved address and port."""
     monkeypatch.setattr(socket, "create_connection", lambda *a: Sock())
     own, d = netguard.Policy(endpoints=netguard.endpoints("http://comfy.lan:8188")), deadline()
-    lookup = {"comfy.lan": "10.1.2.158", "alias.lan": "10.1.2.158", "other.lan": "10.1.2.159"}
+    lookup = {"comfy.lan": "192.0.2.158", "alias.lan": "192.0.2.158", "other.lan": "192.0.2.159"}
     dns = lambda host, port, **kw: resolver(lookup[host])(host, port)  # noqa: E731
     connect = lambda host, port, ok: netguard.connector(own, d, dns, comfy_ok=ok)((host, port), 5)  # noqa: E731
-    for host in ("comfy.lan", "alias.lan", "10.1.2.158"):   # by any name, the same address
+    for host in ("comfy.lan", "alias.lan", "192.0.2.158"):   # by any name, the same address
         connect(host, 8188, True)
-    for host, port, ok in [("10.1.2.158", 8188, False),      # not an output view
-                           ("10.1.2.158", 22, True), ("other.lan", 8188, True), ("10.1.2.159", 8188, True)]:
+    for host, port, ok in [("192.0.2.158", 8188, False),      # not an output view
+                           ("192.0.2.158", 22, True), ("other.lan", 8188, True), ("192.0.2.159", 8188, True)]:
         with pytest.raises(netguard.Refused):
             connect(host, port, ok)
     d.close()
@@ -138,6 +139,6 @@ def test_a_socket_the_deadline_cannot_watch_is_closed(monkeypatch):
 
 def test_allowed_networks_are_parsed_once_in_settings():
     with pytest.raises(ValueError, match="not a network"):
-        Inputs(url_allow_networks=("10.1.2.0/33",))
-    (net,) = Inputs(url_allow_networks=("10.1.2.5/24",)).url_allow_networks
-    assert net == ipaddress.ip_network("10.1.2.0/24")
+        Inputs(url_allow_networks=("10.9.0.0/33",))
+    (net,) = Inputs(url_allow_networks=("10.9.0.5/24",)).url_allow_networks
+    assert net == ipaddress.ip_network("10.9.0.0/24")

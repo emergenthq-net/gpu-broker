@@ -12,8 +12,10 @@ def chat(c, model, **extra):
 
 def test_every_data_route_needs_the_token(client):
     for path in ("/v1/status", "/v1/events", "/v1/models", "/v1/catalog", "/v1/gpu", "/v1/ui", "/v1/metrics", "/v1/stats"):
-        for header in ("Bearer nope", f"bearer {TOKEN}", f"Bearer {TOKEN} ", TOKEN, ""):
+        for header in ("Bearer nope", f"Bearer{TOKEN}", f"Basic {TOKEN}", TOKEN, "Bearer ", ""):
             assert client.get(path, headers={"Authorization": header}).status_code == 401, (path, header)
+        for header in (f"bearer {TOKEN}", f"Bearer {TOKEN} ", f"BEARER  {TOKEN}"):   # the scheme is case-insensitive (RFC 7235)
+            assert client.get(path, headers={"Authorization": header}).status_code == 200, (path, header)
         assert client.get(path).status_code == 200, path
     assert client.post("/v1/jobs", json={}, headers={"Authorization": "Bearer nope"}).status_code == 401
 
@@ -24,7 +26,7 @@ def test_no_configured_token_refuses_everything(broker):
     from gpu_broker.web.app import create_app
     with TestClient(create_app(broker, "", start=False)) as c:
         assert c.get("/v1/status", headers={"Authorization": "Bearer "}).status_code == 401
-        assert c.get("/health").json() == {"ok": True}
+        assert c.get("/health").json()["ok"] is True
 
 
 def test_security_headers_and_no_api_docs(client):
@@ -131,12 +133,12 @@ def test_session_holds_the_gpu_and_rejects_non_comfy_models(client, broker):
     assert client.post("/v1/sessions/end").json() == {"ended": False}
 
 
-def test_quiesce_holds_new_jobs_and_resume_releases_them(client, broker):
+def test_quiesce_refuses_new_jobs_with_503_and_resume_takes_them_again(client, broker):
     assert client.post("/v1/admin/quiesce", params={"wait_s": 1}).json()["drained"] is True
-    jid = client.post("/v1/jobs", json={"model": "llama-8b", "messages": []}).json()["id"]
-    time.sleep(10 * broker.settings.intervals.worker_poll_s)
-    assert client.get(f"/v1/jobs/{jid}").json()["state"] == JobState.QUEUED
+    r = client.post("/v1/jobs", json={"model": "llama-8b", "messages": []})
+    assert r.status_code == 503 and r.headers["retry-after"] == "5" and broker.store.jobs(limit=10) == []
     client.post("/v1/admin/resume")
+    jid = client.post("/v1/jobs", json={"model": "llama-8b", "messages": []}).json()["id"]
     assert done(broker, jid)["state"] == JobState.DONE
 
 

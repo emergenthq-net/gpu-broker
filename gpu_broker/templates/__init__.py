@@ -14,6 +14,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from typing import Any
 
+from ..constants import NUM_FRAMES, TEMPLATE_FRAMES
 from . import edit, hunyuan, image, video, wan
 
 DEFAULTS_KEY = "defaults"   # catalog entry field: per-model request-level defaults
@@ -55,8 +56,14 @@ TEMPLATE_KEYS: dict[str, tuple[str, ...]] = {
 
 
 def build(model: Mapping[str, Any], request: Mapping[str, Any], prefix: str) -> Graph:
-    """The graph for a catalog entry: request > the entry's `defaults` > template DEFAULTS."""
-    layered = {**model.get(DEFAULTS_KEY, {}), **request}
+    """The graph for a catalog entry: request > the entry's `defaults` > template DEFAULTS. The
+    request's `num_frames` is the template's `frames` option (a request's `frames` is the
+    multi-view image slot, never a count)."""
+    layered = {**model.get(DEFAULTS_KEY, {}), **{k: v for k, v in request.items() if k != TEMPLATE_FRAMES}}
+    if (n := request.get(NUM_FRAMES)) is not None:
+        if isinstance(n, bool) or not isinstance(n, int) or n <= 0:
+            raise ValueError(f"`{NUM_FRAMES}` must be a positive whole number of frames, not {n!r}")
+        layered[TEMPLATE_FRAMES] = n
     return TEMPLATES[model["template"]](layered, model.get(PARAMS_KEY, {}), prefix)
 
 

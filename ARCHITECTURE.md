@@ -8,14 +8,19 @@ resident.
 
 ```
 web/            HTTP: auth, routes, dashboard            (FastAPI; no logic of its own)
+mcp_server/     MCP tools (core.py, SDK-free) at /mcp, and `gpu-broker mcp` (stdio relay)   (the `mcp` extra)
 broker.py       composition root: submit / view / wait   (wires everything below)
   admission.py    submit: check, resolve, record, stage, queue a job
 chat.py         interactive chat straight to the resident LLM (priority, variants)
-scheduler.py    the GPU thread: FIFO, dispatch, idle restore
+scheduler.py    the GPU thread: pick, dispatch, idle restore
+  line.py         waiting jobs in the policy's order; which may start (choose); expected GPU-seconds
+classes.py      a job's class: interactive or background, and who may claim which
+  jobline.py      which re-queued jobs can still run
   llmpool.py      concurrent calls to the resident LLM
   sessions.py     interactive ComfyUI sessions
   residency.py    what is on the card; switch safely
 downloads.py    model downloads on their own thread
+failover/       cloud first, local on failure: upstreams config, error classes, breakers, HTTP client
 resolve.py      request → model | substitute | download | rejection   (pure)
 inputs.py       input slots: request shape, model fit (catalog `inputs`)
 media.py        input file data: base64, format by magic bytes, size; <slot>_url fetch
@@ -35,8 +40,11 @@ metrics.py      GPU samples, job latency/throughput
 settings.py     loading configuration: YAML file + environment
   settingsschema.py the configuration dataclasses (tuning.py: the tuning sections)
 constants.py    protocol vocabulary
+policy.py       queue policies: the order the GPU thread considers waiting jobs in
+replay/         an events.jsonl through a policy in simulated time  (offline; `gpu-broker replay`)
 
-cli.py          the console script: serve, check, init, setup, demo
+cli.py          the console script: serve, check, init, setup, demo, replay
+connect/        `gpu-broker connect | disconnect | clients`: point local tools at the broker
 setup/          `gpu-broker setup`: detect servers, write config + token, install the service
                 (runs once, at install; its own argv-only subprocesses: systemctl, sudo -n, uv,
                 useradd, visudo, loginctl)
@@ -65,7 +73,9 @@ tests replace with in-memory fakes.
 4. **State is re-checked, not trusted.** Before reusing the resident LLM its health check
    must pass; ComfyUI is freed before every LLM start because it may have been used directly;
    a stopped ComfyUI is restarted if a unit is configured. At startup the running LLM is
-   adopted and non-terminal jobs from the previous process are failed as orphans.
+   adopted; jobs the previous process had queued but not started are re-queued in order (unless
+   their model left the catalog or they were sessions: those fail with a reason), and
+   any other non-terminal job (it had started, or was a direct chat) is failed as an orphan.
 5. **Substitution is always reported.** A job that runs a different model than requested
    carries the reason; nothing is silently swapped.
 6. **The broker only reaches configured addresses.** Backend URLs come from the config file
@@ -78,7 +88,7 @@ tests replace with in-memory fakes.
    `inputs`), size and format (magic bytes) are all verified in `Broker.submit`; a failure is
    a 400 and nothing is recorded. Image data never enters the job payload: it is staged on
    disk, uploaded to ComfyUI by the GPU thread right before the graph is built, and deleted
-   when the job ends. Staged files are cleared at startup (their jobs were failed as orphans).
+   when the job ends. At startup the files of failed orphans are cleared; re-queued jobs keep theirs.
 
 ## A request's path
 

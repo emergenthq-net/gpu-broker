@@ -189,6 +189,11 @@ class FakeBackends:
         self.uploads.append((name, data, kind))
         return name
 
+    def comfy_view(self, name: str, subfolder: str, kind: str, cap: int) -> bytes | None:
+        self.views = [*getattr(self, "views", []), (name, subfolder, kind)]
+        data: bytes | None = getattr(self, "view_data", None)
+        return data if data is None or len(data) <= cap else None
+
 
 def make_settings(tmp_path: pathlib.Path, catalog: pathlib.Path = FIX / "catalog.yaml", **over: Any) -> settings_mod.Settings:
     cat = tmp_path / "catalog.yaml"

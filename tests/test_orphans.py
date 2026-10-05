@@ -70,7 +70,7 @@ def test_an_old_database_gains_the_column_with_null_for_its_rows(tmp_path):
       INSERT INTO events(ts, job_id, kind, data) VALUES (1, 'cd34ef56ab12', 'job.direct', '{}');""")
     db.close()
     store = Store(str(tmp_path / "b.db"))
-    old = {o["id"]: o for o in store.fail_orphans()}
+    old = {o["id"]: o for o in store.fail_orphans()[0]}
     assert all(o["exec_recipe"] is None for o in old.values())
     assert (old["ab12cd34ef56"]["direct"], old["cd34ef56ab12"]["direct"]) == (0, 1)
 

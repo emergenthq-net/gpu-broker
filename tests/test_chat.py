@@ -71,7 +71,7 @@ def test_background_callers_are_queued(client, broker):
         assert r.status_code == 200 and "direct" not in r.json()["x_broker"]
     assert broker.backends.streamed == []
     r = chat(client, "llama-8b", headers={"x-requester": "batch-agent", "x-priority": "interactive"})
-    assert r.json()["x_broker"]["direct"] is True   # the header wins
+    assert "direct" not in r.json()["x_broker"]   # a background requester's header can only lower its class
 
 
 def test_switch_in_progress_or_other_model_falls_back_to_the_queue(client, broker):

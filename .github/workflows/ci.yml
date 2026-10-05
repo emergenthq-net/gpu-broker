@@ -33,15 +33,21 @@ jobs:
       - name: Package builds with its dashboard assets and demo catalog
         run: |
           uv build --wheel --out-dir dist
-          test "$(python3 -m zipfile -l dist/*.whl | grep -cE 'gpu_broker/web/static/(dash\.html|dash\.js|live\.js|index\.js|imagejob\.js) ')" = 5
+          test "$(python3 -m zipfile -l dist/*.whl | grep -cE 'gpu_broker/web/static/(dash\.html|dash\.js|live\.js|index\.js|imagejob\.js|connect\.js|upstreams\.js) ')" = 7
           python3 -m zipfile -l dist/*.whl | grep -q 'gpu_broker/demo/catalog.yaml '   # `gpu-broker demo` needs it
       - name: Installed wheel imports every module and runs the demo's entry point
         run: |
           uv venv --python ${{ matrix.python }} "$RUNNER_TEMP/wheel"
           uv pip install --python "$RUNNER_TEMP/wheel/bin/python" dist/*.whl
           cd "$RUNNER_TEMP"   # not the checkout: import the installed package, not the source tree
-          wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__')]"
+          # Without extras: everything but the MCP server's SDK modules imports, and `gpu-broker mcp` says what to install.
+          wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__') and not m.name.startswith('gpu_broker.mcp_server.')]"
           wheel/bin/gpu-broker demo --help
+          if wheel/bin/gpu-broker mcp 2> mcp.err; then exit 1; fi
+          grep -q "gpu-broker\[mcp\]" mcp.err
+          # With the mcp extra: every module.
+          uv pip install --python "$RUNNER_TEMP/wheel/bin/python" "$(ls "$GITHUB_WORKSPACE"/dist/*.whl)[mcp]"
+          wheel/bin/python -c "import importlib, pkgutil, gpu_broker; [importlib.import_module(m.name) for m in pkgutil.walk_packages(gpu_broker.__path__, 'gpu_broker.') if not m.name.endswith('__main__')]"
       - name: The sdist is self-testing (unpack, install, run the suite)
         run: |
           uv build --sdist --out-dir "$RUNNER_TEMP/sdist"

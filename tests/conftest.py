@@ -32,14 +32,20 @@ def _no_host_commands():
     that escaped its fakes."""
     real_run, real_popen = subprocess.run, subprocess.Popen
 
-    def guard(real):
-        def call(cmd, *a, **k):
-            argv0 = os.path.basename(str(cmd[0] if isinstance(cmd, (list, tuple)) else cmd).split()[0])
-            if argv0 in HOST_BINARIES:
-                raise AssertionError(f"host command in test: {cmd}")
-            return real(cmd, *a, **k)
-        return call
-    subprocess.run, subprocess.Popen = guard(real_run), guard(real_popen)
+    def refuse(cmd):
+        argv0 = os.path.basename(str(cmd[0] if isinstance(cmd, (list, tuple)) else cmd).split()[0])
+        if argv0 in HOST_BINARIES:
+            raise AssertionError(f"host command in test: {cmd}")
+
+    def guarded_run(cmd, *a, **k):
+        refuse(cmd)
+        return real_run(cmd, *a, **k)
+
+    class GuardedPopen(real_popen):   # a class, not a function: code that writes Popen[bytes]
+        def __init__(self, cmd, *a, **k):   # (the mcp SDK, at import) or isinstance() still works
+            refuse(cmd)
+            super().__init__(cmd, *a, **k)
+    subprocess.run, subprocess.Popen = guarded_run, GuardedPopen
     yield
     subprocess.run, subprocess.Popen = real_run, real_popen
 
@@ -64,3 +70,10 @@ def client(broker):
         yield c
 
 
+
+
+@pytest.fixture(autouse=True)
+def _no_settle(monkeypatch):
+    """connect re-reads files a running app may rewrite after a pause; tests need no pause."""
+    from gpu_broker.connect import engine
+    monkeypatch.setattr(engine, "SETTLE_S", 0)

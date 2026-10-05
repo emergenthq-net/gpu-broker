@@ -22,7 +22,7 @@ from ..metrics import job_metrics, summarize
 
 STATIC = files(__package__) / "static"
 PAGE = "dash.html"
-SCRIPTS = frozenset({"dash", "live", "index", "imagejob"})   # the only files /dash/<name>.js serves
+SCRIPTS = frozenset({"dash", "live", "index", "imagejob", "connect", "upstreams"})   # the only files /dash/<name>.js serves
 JS_MEDIA_TYPE = "text/javascript"
 HOURS = 3600
 

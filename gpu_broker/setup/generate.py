@@ -158,7 +158,6 @@ def config(f: Findings, lay: Layout, sudo: bool = False) -> dict[str, object]:
         "ui": {"gpu_label": f.gpu.label if f.gpu else "GPU",
                "resident_label": llms[0].kind.label if llms else "the default model",
                "groups": groups},
-        "model_map": yaml.safe_load(starter.starter(starter.CONFIG))["model_map"],
     }
 
 

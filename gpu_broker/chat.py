@@ -6,8 +6,7 @@ or streamed straight from the model server. Background callers, a model that is 
 resident, or a residency switch in progress all fall back to the job queue, so the GPU
 thread still decides every switch.
 
-Priority: header `x-priority: interactive|background` wins; otherwise callers listed in the
-catalog's `defaults.background_requesters` are background and everyone else is interactive.
+Priority: classes.py decides who is interactive.
 """
 from __future__ import annotations
 
@@ -18,7 +17,7 @@ from typing import Any
 from . import schema
 from .backends import Backends
 from .catalog import Catalog, Model
-from .constants import Event, JobState, Kind, Priority, Runner
+from .constants import Event, JobState, Kind, Runner
 from .llmpool import LlmPool
 from .modelmap import joined
 from .resolve import resolve
@@ -43,13 +42,6 @@ def apply_variant(catalog: Catalog, body: Mapping[str, Any]) -> dict[str, Any]:
         return dict(body)
     key, overrides = found
     return {**body, **overrides, "model": key}
-
-
-def is_interactive(catalog: Catalog, priority: str, requester: str) -> bool:
-    p = priority.strip().lower()
-    if p in set(Priority):
-        return p == Priority.INTERACTIVE
-    return requester not in catalog.defaults.get("background_requesters", [])
 
 
 class DirectChat:

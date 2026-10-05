@@ -115,7 +115,7 @@ def test_redirects_may_not_leave_http():
     assert h.redirect_request(req, None, 302, "Found", {}, "https://cdn/a.png").full_url == "https://cdn/a.png"
 
 
-@pytest.mark.parametrize("error", [OSError("connection refused"), netguard.Refused("10.1.2.1 is not public"),
+@pytest.mark.parametrize("error", [OSError("connection refused"), netguard.Refused("10.9.0.1 is not public"),
                                    http.client.RemoteDisconnected("bye"), http.client.IncompleteRead(b""),
                                    TimeoutError("slow"), ValueError("redirect to file:")])
 @pytest.mark.parametrize("slot", ["image", "video"])

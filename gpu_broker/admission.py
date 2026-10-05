@@ -2,7 +2,8 @@
 
 A malformed request, or input files the resolved model cannot take, raise ValueError (HTTP
 400) before anything is recorded; a rejected job is recorded but never decodes or fetches its
-files. Everything is read through the broker at call time, so the broker's current settings
+files. `priority` (the caller's `x-priority` header) and the requester set the job's
+scheduling class. Everything is read through the broker at call time, so the broker's current settings
 and parts apply.
 """
 from __future__ import annotations
@@ -48,12 +49,17 @@ class StagingError(Exception):
 
 
 def submit(b: Broker, body: Mapping[str, Any], requester: str, requested: str | None = None,
-           note: str | None = None) -> tuple[str, dict[str, Any]]:
+       note: str | None = None, priority: str = "", owner: str | None = None) -> tuple[str, dict[str, Any]]:
     """Resolve, record and queue a request; returns (job id, what the caller needs to know).
     A malformed request, or input files the model cannot take, raise ValueError (HTTP 400)
     before anything is recorded. `requested`/`note`: the name the caller really sent and why
-    `body["model"]` differs (model_map), recorded on the job and its substitution event."""
+    `body["model"]` differs (model_map), recorded on the job and its substitution event.
+    `priority`: the caller's `x-priority` header; it and the requester set the job's class.
+    `owner`: the submitting client key's id (None for the main token), for who may see the job."""
     validate_request(body)
+    b.scheduler.admit()   # quiesced: HTTP 503, before anything is recorded, fetched or downloaded
+    if b.scheduler.classes.strict:   # fifo leaves the class as the caller sent it
+        body = b.scheduler.classes.classify(b.catalog, body, priority, requester)
     given = inputs.slots(body)
     name = body.get("model") or b.catalog.defaults["resident"]
     r = resolve(b.catalog.data, name, body.get("kind"), body.get("caps"), session=bool(body.get(SESSION_KEY)),
@@ -70,17 +76,13 @@ def submit(b: Broker, body: Mapping[str, Any], requester: str, requested: str | 
         files = media.read(body, b.settings.inputs, b.fetch_policy)
     payload = media.strip(body) | ({INPUTS_KEY: media.summarize(files)} if files else {})
     # Its own column, never the caller's payload: a restart cleans with it (GpuHold.orphan).
-    asked = requested or name
-    substitution = joined(note, r.substitution)
-    jid = b.store.create_job(requester[:REQUESTER_MAX], asked, payload, exec_recipe=recipe)
+    asked, substitution = requested or name, joined(note, r.substitution)
+    jid = b.store.create_job(requester[:REQUESTER_MAX], asked, payload, exec_recipe=recipe, owner=owner)
     info: dict[str, Any] = {"requested": asked, "resolved": r.resolved, "substitution": substitution, "notes": r.notes}
     if r.download:
-        key: str | None
+        key = r.download.slug if r.register else _key_for_slug(b, r.download.slug)
         if r.register:
-            key = r.download.slug
-            b.catalog.register(key, r.register)
-        else:
-            key = _key_for_slug(b, r.download.slug)
+            b.catalog.register(r.download.slug, r.register)
         b.downloads.request(r.download, key)
         info["download"] = {**r.download.as_dict(), "state": (b.store.download(r.download.slug) or {}).get("state")}
         b.store.update_job(jid, download=info["download"])

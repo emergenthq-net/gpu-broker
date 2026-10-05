@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "gpu-broker"
-version = "0.4.0"
+version = "0.5.0"
 description = "Share one GPU between LLM servers and ComfyUI: a queue that swaps models in and out on demand."
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.12"
 authors = [{ name = "Ashwin Philips" }]
-keywords = ["gpu", "llm", "comfyui", "inference", "scheduler"]
+keywords = ["gpu", "llm", "comfyui", "inference", "scheduler", "mcp"]
 classifiers = [
     "Programming Language :: Python :: 3",
     "Framework :: FastAPI",
@@ -34,8 +34,10 @@ Documentation = "https://github.com/emergenthq-net/gpu-broker/tree/main/docs"
 
 [project.optional-dependencies]
 download = ["huggingface_hub>=0.34"]   # provides the `hf` CLI used for model downloads
+mcp = ["mcp>=2.3,<3"]   # the MCP server: /mcp on the broker, `gpu-broker mcp` (stdio) on a client
 dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.6", "mypy>=1.11", "types-PyYAML",
-       "openai>=1.60", "anthropic>=0.50"]   # tests/test_dropin_*: the official SDKs against the broker
+       "openai>=1.60", "anthropic>=0.50",   # tests/test_dropin_*: the official SDKs against the broker
+       "mcp>=2.3,<3"]   # tests/test_mcp_*: the MCP server, and the SDK's own client against it
 
 [project.scripts]
 gpu-broker = "gpu_broker.cli:main"

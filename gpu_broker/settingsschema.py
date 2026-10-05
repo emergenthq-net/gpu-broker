@@ -1,8 +1,8 @@
 """The deployment settings: typed, frozen dataclasses with documented defaults.
 
 One dataclass per config section; the tuning sections (timeouts, intervals, limits, the GPU
-choice) are in tuning.py and re-exported here. settings.py builds a `Settings` from the config
-file and the environment.
+choice, scheduling, fallback, the dashboard) are in tuning.py. settings.py builds a `Settings`
+from the config file and the environment, and re-exports every section.
 """
 from __future__ import annotations
 
@@ -11,7 +11,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
-from .tuning import Gpu, Intervals, Limits, Timeouts
+from .failover.config import Upstreams
+from .tuning import Fallback, Gpu, Intervals, Limits, Mcp, Scheduling, Timeouts, Ui
 from .units import UnitRef
 
 Network = ipaddress.IPv4Network | ipaddress.IPv6Network
@@ -33,6 +34,7 @@ class Comfy:
     output_dir: str = ""
     public_url: str = ""                 # as browsers reach it (dashboard, output URLs); "" = url
     unit: UnitRef | None = None          # started if ComfyUI is found down; None = never started
+    auth_env: str = ""                   # ComfyUI behind auth: env var (UPSTREAM_TOKEN_*) with its Bearer token
 
     @property
     def browser_url(self) -> str:
@@ -74,15 +76,6 @@ class Inputs:
 
 
 @dataclass(frozen=True)
-class Ui:
-    gpu_label: str = "GPU"
-    resident_label: str = "the default model"
-    power_max_w: float = 450      # top of the dashboard's power chart
-    temp_max_c: float = 90        # top of the temperature chart
-    groups: Mapping[str, Mapping[str, str]] = field(default_factory=dict)  # {group: {label, color}}
-
-
-@dataclass(frozen=True)
 class Settings:
     catalog: str = "/etc/gpu-broker/catalog.yaml"
     db: str = "/var/lib/gpu-broker/broker.db"
@@ -97,7 +90,11 @@ class Settings:
     limits: Limits = field(default_factory=Limits)
     inputs: Inputs = field(default_factory=Inputs)
     ui: Ui = field(default_factory=Ui)
-    # Hosted model names -> catalog models, first matching glob wins: {"gpt-*": "@default"}.
-    # Only names the catalog does not know are mapped. Env: BROKER_MODEL_MAP as a JSON object.
-    model_map: Mapping[str, str] = field(default_factory=dict)
+    # Hosted names -> catalog models (modelmap.py). None = the built-in default map, {} = off.
+    # Env: BROKER_MODEL_MAP as a JSON object.
+    model_map: Mapping[str, str] | None = None
+    fallback: Fallback = field(default_factory=Fallback)
+    scheduler: Scheduling = field(default_factory=Scheduling)
+    upstreams: Upstreams = field(default_factory=Upstreams)   # cloud first, local on failure (failover/)
+    mcp: Mcp = field(default_factory=Mcp)
     source: str | None = None     # the file these came from, for the startup event

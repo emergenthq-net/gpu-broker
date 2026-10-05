@@ -3,6 +3,7 @@ write a starter config (init), set everything up from what is installed (setup),
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import os
 import sys
 from collections.abc import Mapping
@@ -10,7 +11,11 @@ from collections.abc import Mapping
 from . import drivers, execjob, settings
 from .catalog import Catalog
 from .constants import APP_NAME, ERR_SHORT, TOKEN_ENV, Runner
+from .modelmap import effective
+from .policy import POLICIES
+from .resolve import lookup
 from .templates import TEMPLATES
+from .tuning import Scheduling
 
 EXIT_OK, EXIT_PROBLEMS, EXIT_NO_TOKEN = 0, 1, 2
 INIT_NEXT = """
@@ -20,9 +25,36 @@ Next:
   3. sudo BROKER_TOKEN=$(openssl rand -hex 24) gpu-broker -c {config} serve"""
 
 
+CONNECT_COMMANDS = frozenset({"connect", "disconnect", "clients"})   # handled by gpu_broker.connect.cli
+MCP_COMMAND = "mcp"   # MCP over stdio, relayed to a broker (gpu_broker.mcp_server.stdio)
+
+
+def mcp_stdio(argv: list[str], env: Mapping[str, str]) -> int:
+    from . import mcp_server
+    if not mcp_server.available():
+        print(f"{APP_NAME} mcp needs the MCP SDK: pip install '{APP_NAME}[mcp]'", file=sys.stderr)
+        return EXIT_PROBLEMS
+    from .mcp_server.stdio import main as stdio_main
+    return stdio_main(argv, env)
+
+
+def rules(base: Scheduling, a: argparse.Namespace) -> Scheduling:
+    """The replay's scheduler settings: the config's, with the command line's overrides."""
+    over = {k: getattr(a, k) for k in ("max_wait_s", "evict_wait_s") if getattr(a, k) is not None}
+    return dataclasses.replace(base, **over)
+
+
 def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) -> int:
     env = os.environ if env is None else env
-    ap = argparse.ArgumentParser(prog=APP_NAME, description="Share one GPU between LLM servers and ComfyUI.")
+    args = sys.argv[1:] if argv is None else argv
+    if args and args[0] in CONNECT_COMMANDS:
+        from .connect.cli import main as connect_main
+        return connect_main(args, env)
+    if args and args[0] == MCP_COMMAND:   # needs neither a config file nor the broker's token
+        return mcp_stdio(args[1:], env)
+    ap = argparse.ArgumentParser(prog=APP_NAME, description="Share one GPU between LLM servers and ComfyUI. "
+                                 "Also: `connect`, `disconnect`, `clients` point this machine's AI apps at a broker; "
+                                 "`mcp` serves its tools over stdio to Claude, Codex and other MCP apps.")
     ap.add_argument("-c", "--config", help=f"config file (default: ${settings.CONFIG_ENV} or {settings.DEFAULT_PATH})")
     sub = ap.add_subparsers(dest="cmd")
     serve = sub.add_parser("serve", help="run the HTTP API (default)")
@@ -44,16 +76,30 @@ def main(argv: list[str] | None = None, env: Mapping[str, str] | None = None) ->
     demo.add_argument("--port", type=int, help="port (default: a free one, 8096 if it is free)")
     demo.add_argument("--quiet", action="store_true", help="no simulated traffic; the card idles until you send something")
     demo.add_argument("--no-browser", dest="browser", action="store_false", help="print the dashboard link without opening it")
-    a = ap.parse_args(argv)
+    replay = sub.add_parser("replay", help="replay an events.jsonl through queue policies in simulated time; "
+                                           "contacts nothing")
+    replay.add_argument("events", help="the broker's events_jsonl file")
+    replay.add_argument("--catalog", help="catalog the log was written under (default: catalog from the config)")
+    replay.add_argument("--policy", action="append", choices=sorted(POLICIES), help="policy to replay (repeatable; default: all)")
+    replay.add_argument("--json", action="store_true", help="machine-readable output")
+    replay.add_argument("--max-wait-s", type=float, help="scheduler.max_wait_s to replay with (default: the config's)")
+    replay.add_argument("--evict-wait-s", type=float, help="scheduler.evict_wait_s to replay with (default: the config's)")
+    a = ap.parse_args(args)
     if a.cmd == "demo":   # needs no config file, token or host access; serve and check never load the demo
         from .demo import run
         return run.main(a.host, a.port, a.quiet, a.browser)
+    if a.cmd == "replay" and a.catalog:   # a catalog is all a replay needs
+        from .replay.main import run as replay_run
+        return replay_run(a.events, a.catalog, a.policy or sorted(POLICIES), a.json, rules(Scheduling(), a))
     if a.cmd == "init":
         return init(a.dir, a.force)
     if a.cmd == "setup":
         from . import setup
         return setup.main(setup.Options(a.yes, a.dry_run, a.dir), env)
     cfg = settings.load(a.config, env)
+    if a.cmd == "replay":
+        from .replay.main import run as replay_run
+        return replay_run(a.events, cfg.catalog, a.policy or sorted(POLICIES), a.json, rules(cfg.scheduler, a))
     if a.cmd == "check":
         return check(cfg)
     token = env.get(TOKEN_ENV, "")
@@ -102,6 +148,13 @@ def check(cfg: settings.Settings) -> int:
     print(f"comfy:   {cfg.comfy.url} (start unit: {cfg.comfy.unit.key if cfg.comfy.unit else None})")
     print(f"listen:  {cfg.server.host}:{cfg.server.port}")
     print(gpu_summary(driver))
+    mapped = ", ".join(f"{p} -> {t}" for p, t in effective(cfg.model_map).items()) or "off"
+    print(f"names:   {'built-in default' if cfg.model_map is None else 'model_map'}: {mapped}")
+    print(f"hosted:  fallback {'on' if cfg.fallback.enabled else 'off'}")
+    up = cfg.upstreams
+    print("cloud:   " + ("; ".join(f"{p} -> {' -> '.join(c)}" for p, c in up.routes.items()) if up.enabled else "off"))
+    problems += [f"upstreams: {n!r} is neither a provider nor a catalog model" for n in sorted(up.local_names())
+                 if lookup(catalog.data, n) is None and catalog.variant(n) is None]
     for p in problems:
         print("problem:", p)
     return EXIT_PROBLEMS if problems else EXIT_OK

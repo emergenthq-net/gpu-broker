@@ -4,7 +4,7 @@ Used for every `<slot>_url` (image, end_image, video). Every connection the open
 first request and each redirect hop — resolves the host itself, refuses unless every address is
 public (`is_global`) or inside an operator allowlist (`inputs.url_allow_networks`), and then
 connects to the vetted address, so a DNS answer cannot change between the check and the
-connection. IPv6 forms that carry an IPv4 address (mapped, NAT64, IPv4-compatible) must pass for
+connection. IPv6 forms that carry an IPv4 address (mapped, 6to4, Teredo, NAT64, IPv4-compatible) must pass for
 the embedded address too. TLS still verifies the certificate against the host name.
 Environment proxies are ignored: a proxy would make the check meaningless.
 
@@ -65,6 +65,10 @@ def embedded(ip: Address) -> ipaddress.IPv4Address | None:
         return None
     if ip.ipv4_mapped is not None:
         return ip.ipv4_mapped
+    if ip.sixtofour is not None:   # 2002:a.b.c.d::/48 (RFC 3056)
+        return ip.sixtofour
+    if ip.teredo is not None:      # 2001::/32: (server, client); the client is who answers
+        return ip.teredo[1]
     if any(ip in n for n in NAT64) or (ip in V4_COMPAT and int(ip) > 1):
         return ipaddress.IPv4Address(int(ip) & V4_BITS)
     return None

@@ -8,7 +8,8 @@ from __future__ import annotations
 import os
 import pathlib
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from typing import Any
 
 from .constants import FRAMES, IMAGE_SLOTS, INPUT_SLOTS
 from .media import EXTENSION, InputFile
@@ -63,13 +64,20 @@ class Staging:
             out[slot] = out.get(slot, 0) + 1
         return out
 
+    def check(self, jid: str, summary: Mapping[str, Any]) -> None:
+        """The files on disk must be the ones submit accepted (`summary`: the job's recorded
+        inputs); a vanished file fails the job."""
+        recorded = {slot: len(v) if isinstance(v, list) else 1 for slot, v in summary.items()}
+        if (staged := self.received(jid)) != recorded:
+            raise RuntimeError(f"input files missing: expected {recorded}, found {staged}")
+
     def discard(self, jid: str) -> None:
         for p in self._files(jid):
             p.unlink(missing_ok=True)
 
-    def clear(self) -> None:
-        """At startup: no job from a previous process will run, so none of its files are needed."""
+    def clear(self, keep: frozenset[str] = frozenset()) -> None:
+        """At startup: drop the files of every job from a previous process except `keep` (re-queued)."""
         if self.dir.is_dir():
             for p in self.dir.iterdir():
-                if STAGED.fullmatch(p.name) and p.is_file():
+                if STAGED.fullmatch(p.name) and p.is_file() and p.name[:JOB_ID_HEX] not in keep:
                     p.unlink(missing_ok=True)

@@ -1,9 +1,8 @@
 """HTTP clients for the two kinds of backend: OpenAI-compatible LLM servers and ComfyUI.
 
-The broker only ever contacts URLs from trusted configuration — `comfy.url` in the config
-file and `endpoint` in catalog entries — never a URL taken from a request. Values that come
-back from a backend (a ComfyUI prompt id, output file names) are escaped before they are
-placed in a URL.
+The broker only ever contacts URLs from trusted configuration (`comfy.url`, catalog `endpoint`),
+never a URL taken from a request. Values that come back from a backend (a ComfyUI prompt id,
+output file names) are escaped before they are placed in a URL.
 """
 from __future__ import annotations
 
@@ -55,6 +54,7 @@ class Backends(Protocol):
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]: ...
     def comfy_queue_len(self) -> int | None: ...
     def comfy_upload(self, name: str, data: bytes, kind: str) -> str: ...
+    def comfy_view(self, name: str, subfolder: str, kind: str, cap: int) -> bytes | None: ...
 
 
 def view_url(browser_url: str, filename: str, subfolder: str, kind: str = OUTPUT_TYPE) -> str:
@@ -72,8 +72,7 @@ def _request(url: str, body: Any = None, headers: Mapping[str, str] | None = Non
 class HttpBackends:
     def __init__(self, comfy: Comfy, timeouts: Timeouts, intervals: Intervals, tokens: Mapping[str, str],
                  clock: Callable[[], float] = time.monotonic, sleep: Callable[[float], None] = time.sleep) -> None:
-        self.comfy, self.t, self.i, self.tokens = comfy, timeouts, intervals, tokens
-        self.clock, self.sleep = clock, sleep
+        self.comfy, self.t, self.i, self.tokens, self.clock, self.sleep = comfy, timeouts, intervals, tokens, clock, sleep
 
     def _json(self, req: urllib.request.Request, timeout: float) -> Any:
         with urllib.request.urlopen(req, timeout=timeout) as r:  # noqa: S310 — built by _request
@@ -104,13 +103,11 @@ class HttpBackends:
 
     def llm_embed(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
         """One /v1/embeddings call on a server started for embeddings (llama-server --embeddings)."""
-        result: dict[str, Any] = self._json(self._chat_request(model, payload, None, EMBED), self.t.llm_call_s)
-        return result
+        return dict(self._json(self._chat_request(model, payload, None, EMBED), self.t.llm_call_s))
 
     def llm_chat(self, model: Model, payload: Mapping[str, Any]) -> dict[str, Any]:
         """One non-streamed completion."""
-        result: dict[str, Any] = self._json(self._chat_request(model, payload, False), self.t.llm_call_s)
-        return result
+        return dict(self._json(self._chat_request(model, payload, False), self.t.llm_call_s))
 
     def llm_stream(self, model: Model, payload: Mapping[str, Any], summary: dict[str, Any]) -> Iterator[str]:
         """Relay the server's SSE lines as they arrive; copy usage/timings from them into `summary`."""
@@ -126,31 +123,41 @@ class HttpBackends:
                 yield line
 
     # ---- ComfyUI --------------------------------------------------------
+    def _comfy(self, path: str, body: Any = None) -> urllib.request.Request:
+        """A request to ComfyUI at comfy.url, with its Bearer token when comfy.auth_env names one."""
+        token = self.tokens.get(self.comfy.auth_env, "") if self.comfy.auth_env else ""
+        return _request(self.comfy.url + path, body, {"Authorization": f"{AUTH_SCHEME} {token}"} if token else None)
+
+    def comfy_view(self, name: str, subfolder: str, kind: str, cap: int) -> bytes | None:
+        """An output file from ComfyUI's /view (its own `type`: output or temp), or None when larger than `cap`."""
+        with urllib.request.urlopen(self._comfy(view_url("", name, subfolder, kind)), timeout=self.t.comfy_http_s) as r:  # noqa: S310
+            data: bytes = r.read(cap + 1)
+        return data if len(data) <= cap else None
+
     def comfy_alive(self) -> bool:
-        return self._ok(_request(self.comfy.url + SYSTEM_STATS))
+        return self._ok(self._comfy(SYSTEM_STATS))
 
     def comfy_free(self) -> None:
         """Unload models and free VRAM. Best effort: a ComfyUI that is down holds no VRAM."""
         with contextlib.suppress(OSError, ValueError):
-            self._json(_request(self.comfy.url + FREE, {"unload_models": True, "free_memory": True}), self.t.comfy_http_s)
+            self._json(self._comfy(FREE, {"unload_models": True, "free_memory": True}), self.t.comfy_http_s)
 
     def comfy_queue_len(self) -> int | None:
         """Prompts queued or running; None when ComfyUI cannot be asked (not the same as idle)."""
         try:
-            return int(self._json(_request(self.comfy.url + PROMPT), self.t.health_s)["exec_info"]["queue_remaining"])
+            return int(self._json(self._comfy(PROMPT), self.t.health_s)["exec_info"]["queue_remaining"])
         except (OSError, ValueError, KeyError, TypeError):
             return None
 
     def comfy_upload(self, name: str, data: bytes, kind: str) -> str:
-        """Store an input image in ComfyUI (POST /upload/image); returns the name a LoadImage
-        node must use (`subfolder/name` when ComfyUI files it in a subfolder)."""
+        """Store an input image in ComfyUI; returns the name a LoadImage node uses (`subfolder/name`)."""
         boundary = secrets.token_hex(16)
         parts = [f'--{boundary}\r\nContent-Disposition: form-data; name="{k}"\r\n\r\n{v}\r\n'.encode()
                  for k, v in UPLOAD_FIELDS.items()]
         parts.append(f'--{boundary}\r\nContent-Disposition: form-data; name="image"; filename="{name}"\r\n'
                      f"Content-Type: {IMAGE_MIME[kind]}\r\n\r\n".encode() + data + b"\r\n")
         body = b"".join(parts) + f"--{boundary}--\r\n".encode()
-        req = _request(self.comfy.url + UPLOAD)
+        req = self._comfy(UPLOAD)
         req.data, req.method = body, "POST"
         req.add_header("Content-Type", f"multipart/form-data; boundary={boundary}")
         try:
@@ -162,14 +169,14 @@ class HttpBackends:
     def comfy_run(self, key: str, graph: dict[str, Any], jid: str) -> dict[str, Any]:
         """Submit a graph and wait for it; returns output files with browser-reachable URLs."""
         try:
-            sent = self._json(_request(self.comfy.url + PROMPT, {"prompt": graph, "client_id": CLIENT_ID_PREFIX + jid}),
+            sent = self._json(self._comfy(PROMPT, {"prompt": graph, "client_id": CLIENT_ID_PREFIX + jid}),
                               self.t.comfy_submit_s)
         except urllib.error.HTTPError as e:
             raise RuntimeError(f"ComfyUI rejected the graph: {e.read().decode()[:ERR_DETAIL]}") from None
         pid = str(sent["prompt_id"])
         t0 = self.clock()
         while self.clock() - t0 < self.t.comfy_run_s:
-            history = self._json(_request(self.comfy.url + HISTORY + quote(pid, safe="")), self.t.comfy_http_s)
+            history = self._json(self._comfy(HISTORY + quote(pid, safe="")), self.t.comfy_http_s)
             if pid in history and (done := self._finished(history[pid])) is not None:
                 return {"model": key, "outputs": done, "wall_s": round(self.clock() - t0, DECIMALS)}
             self.sleep(self.i.comfy_poll_s)

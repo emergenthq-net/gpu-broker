@@ -1,10 +1,10 @@
 """Loading the deployment settings: one YAML file plus environment overrides.
 
-Precedence is environment > file > the defaults (settingsschema.py, whose classes are
-re-exported here). The file is $BROKER_CONFIG, else DEFAULT_PATH; a missing default file
-means "all defaults" (systemd driver on this machine, ComfyUI and the API on localhost). An
-unknown key is an error, so a typo never silently falls back to a default. Secrets (the API
-token, model-server keys) are environment-only.
+Precedence is environment > file > the defaults (settingsschema.py and tuning.py, whose
+classes are re-exported here). The file is $BROKER_CONFIG, else DEFAULT_PATH; a missing
+default file means "all defaults" (systemd driver on this machine, ComfyUI and the API on
+localhost). An unknown key is an error, so a typo never silently falls back to a default.
+Secrets (the API token, model-server keys) are environment-only.
 """
 from __future__ import annotations
 
@@ -24,11 +24,14 @@ from .settingsschema import Inputs as Inputs
 from .settingsschema import Network as Network
 from .settingsschema import Server as Server
 from .settingsschema import Settings as Settings
-from .settingsschema import Ui as Ui
+from .tuning import Fallback as Fallback
 from .tuning import Gpu as Gpu
 from .tuning import Intervals as Intervals
 from .tuning import Limits as Limits
+from .tuning import Mcp as Mcp
+from .tuning import Scheduling as Scheduling
 from .tuning import Timeouts as Timeouts
+from .tuning import Ui as Ui
 from .units import unit_ref
 
 DEFAULT_PATH, CONFIG_ENV = "/etc/gpu-broker/config.yaml", "BROKER_CONFIG"
@@ -53,6 +56,9 @@ ENV: Mapping[str, tuple[str, ...]] = {   # env var -> settings path
     "BROKER_INPUT_URLS": ("inputs", "allow_urls"),
     "BROKER_INPUT_DIR": ("inputs", "staging_dir"),
     "BROKER_MODEL_MAP": ("model_map",),
+    "BROKER_FALLBACK": ("fallback", "enabled"),
+    "BROKER_MCP": ("mcp", "enabled"),
+    "BROKER_SCHEDULER_POLICY": ("scheduler", "policy"),   # fifo: the pre-`fair` queue, a rollback
 }
 
 
@@ -102,7 +108,7 @@ def _coerce(name: str, value: Any, annotation: str) -> Any:
     if name == "unit":
         return None if value in (None, "") else unit_ref(value)
     if name == "model_map":
-        return parse_map(json.loads(value) if isinstance(value, str) else value or {})
+        return None if value is None else parse_map(json.loads(value) if isinstance(value, str) else value)
     if name == "allowed_units":
         return None if value is None else tuple(unit_ref(u) for u in value)
     if name == "index":
