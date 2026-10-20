@@ -90,11 +90,41 @@ class Residency:
             raise RuntimeError(f"ComfyUI did not come up within {self.t.comfy_start_s}s")
         self.store.event(Event.RES_COMFY_STARTED, jid)
 
+    def _preflight_llm_switch(self, key: str) -> None:
+        """Refuse a known catalog headroom deficit before stopping the resident LLM.
+
+        This is a negative capacity guard, not positive admission: catalog VRAM
+        sizes are estimates, and a pass still requires post-switch verification.
+        No unregistered GPU tenant is stopped by this check.
+        """
+        current = self.current
+        if current is None or current == key:
+            return
+        target = int(self.catalog.models[key].get("vram_mib") or 0)
+        reclaim = int(self.catalog.models[current].get("vram_mib") or 0)
+        if not target or not reclaim:
+            return  # No bound can be inferred from an absent catalog estimate.
+        try:
+            used, total, _ = self.driver.gpu()  # fresh reading, not a cached observation
+        except DRIVER_ERRORS as exc:
+            raise RuntimeError("GPU headroom observation unavailable; preserving resident LLM") from exc
+        if total <= 0 or used < 0 or used > total:
+            raise RuntimeError("Invalid GPU headroom observation; preserving resident LLM")
+        reserve = int(self.catalog.defaults.get("vram_reserve_mib") or 0)
+        possible = total - used + reclaim
+        if possible < target + reserve:
+            raise RuntimeError(
+                f"Insufficient estimated GPU headroom for {key}: at most {possible} MiB "
+                f"after releasing {current}, require {target + reserve} MiB including reserve; "
+                "resident LLM preserved"
+            )
+
     def ensure(self, key: str, jid: str | None = None) -> None:
         """Make `key` runnable now."""
         if self.catalog.models[key]["runner"] == Runner.LLM_UNIT:
             if self.current == key and self.healthy(key):
                 return
+            self._preflight_llm_switch(key)
             if self.current == key:  # stopped from outside since we last looked
                 self.store.event(Event.RES_LOST, jid, model=key)
                 self.current = None
