@@ -51,6 +51,7 @@ It also fits:
   - queues whatever arrives meanwhile.
 - **Puts the chat model back by itself** once the card has been quiet for a couple of minutes.
 - **Keeps people ahead of batch work.** Your own chats skip the queue and stream token by token.
+- **Preserves the current LLM on a known VRAM deficit.** Before switching between broker-managed LLM units, a fresh GPU reading checks the optimistic memory headroom after releasing the current unit. If even that estimate cannot fit the requested model plus its configured reserve, the broker refuses the switch without stopping the resident LLM. GPU telemetry failure also refuses a disruptive switch. This check cannot prove that a new model will execute successfully; other GPU tenants and catalog estimates remain separate factors.
 - **Shows what is happening.** A web dashboard shows what is loaded, what runs, what waits, and every switch.
 - **Speaks the OpenAI (Chat Completions and Responses) and Anthropic APIs,** so Open WebUI, the official SDKs and the Codex CLI connect unchanged.
 - **Cloud first, local when it fails (optional).** With `upstreams:` routes, `claude-*` and `gpt-*` go to the real provider with the client's own key, and fall back to a local model on an outage, a hung connection or used-up quota; a circuit breaker sends them back when the provider recovers ([docs/failover.md](docs/failover.md)).
