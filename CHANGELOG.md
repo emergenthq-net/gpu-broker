@@ -5,6 +5,9 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Before switching between known LLM units, a fresh GPU reading rejects a catalog-estimated VRAM shortfall, even if the currently managed LLM were released. This avoids stopping an otherwise healthy resident model when unmanaged GPU users already consume the headroom. A failed GPU probe similarly preserves the current resident. This is a conservative rejection, not evidence that a successful preflight guarantees execution; catalog sizes are estimates and the scheduler's existing post-switch health verification remains mandatory.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added
