@@ -84,6 +84,10 @@ def test_the_header_still_wins_over_the_body(client, broker):
 def test_under_fifo_the_route_writes_the_class_and_a_body_still_lowers_it(tmp_path):
     s = dataclasses.replace(make_settings(tmp_path, catalog=catalog_with_embedder(tmp_path)), scheduler=Scheduling(policy="fifo"))
     driver = FakeDriver({"llama-8b"})
+    # This checks priority propagation, not capacity refusal. The embedding
+    # model remains resident before the 32B request; give the fake GPU enough
+    # observed headroom for that legitimate switch.
+    driver.vram = (2500, 24564)
     b = Broker(s, env={}, driver=driver, backends=ToolBackends(driver))
     b.start()
     try:
