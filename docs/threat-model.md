@@ -44,6 +44,21 @@ host. This file is the reference for security review.
 
 ## Threats and mitigations
 
+### Resident LLM capacity protection
+
+- Before a managed LLM replacement, `residency.py` and `headroom.py` check a fresh
+  GPU observation against the target estimate plus reserve. A total-card deficit
+  refuses before any unload, including when the current model's size is unknown.
+- With a current-model estimate, an occupancy deficit first triggers only the
+  already-planned ComfyUI unload. The resident LLM stays running during the bounded
+  observation wait. A successful `/free` response is not a reclamation witness;
+  only newly observed free memory enters the estimate. No unrelated tenant is stopped.
+- Failed/invalid telemetry or persistent deficit preserves the LLM. ComfyUI weights
+  may already be unloaded. Aggregate telemetry does not prove which process released
+  memory; catalog estimates and external allocation races remain limitations, and
+  post-switch model health verification remains required.
+- **Tests:** `tests/test_residency_preflight.py`, `tests/test_residency.py`.
+
 ### T1. Calling the API without the token
 
 - **Mitigations**

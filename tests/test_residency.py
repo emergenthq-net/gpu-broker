@@ -132,3 +132,33 @@ def test_the_vram_wait_asks_for_readings_taken_after_the_evictions_returned(res)
     res.cached_gpu = lambda after: afters.append(after) or None
     res.ensure("sharp")
     assert order == ["free", "stamp"] and afters and set(afters) == {1000.0}
+
+
+def test_capacity_shortfall_refuses_switch_before_mutating_the_resident(res):
+    # External tenants may hold VRAM that stopping the broker's LLM cannot free.
+    res.driver.vram = (23800, 24564)
+    before = list(res.driver.calls)
+    with pytest.raises(RuntimeError, match="Insufficient estimated GPU headroom"):
+        res.ensure("qwen-coder-32b")
+    assert res.driver.calls == before
+    assert res.backends.frees == 1  # attempt only the planned ComfyUI unload, then remeasure
+    assert res.driver.active == {"llama-8b"}
+    assert res.current == "llama-8b"
+
+
+def test_failed_capacity_probe_preserves_the_current_llm(res):
+    res.driver.no_gpu = True
+    before = list(res.driver.calls)
+    with pytest.raises(RuntimeError, match="headroom observation unavailable"):
+        res.ensure("qwen-coder-32b")
+    assert res.driver.calls == before
+    assert res.backends.frees == 0
+    assert res.driver.active == {"llama-8b"}
+
+
+def test_a_switch_that_has_estimated_headroom_uses_existing_verification(res):
+    # Existing model-switch checks still decide whether the new LLM is healthy.
+    res.driver.vram = (8000, 24564)
+    res.ensure("qwen-coder-32b")
+    assert res.current == "qwen-coder-32b"
+    assert res.driver.active == {"qwen-coder"}

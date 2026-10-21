@@ -5,6 +5,10 @@ and versions follow [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+- Before switching between known LLM units, a fresh GPU reading rejects a catalog-estimated VRAM shortfall, even if the currently managed LLM were released. This avoids stopping an otherwise healthy resident model when unmanaged GPU users already consume the headroom. A failed GPU probe similarly preserves the current resident. This is a conservative rejection, not evidence that a successful preflight guarantees execution; catalog sizes are estimates and the scheduler's existing post-switch health verification remains mandatory.
+- Keep the actual total-card capacity check when the resident LLM has no VRAM estimate. Occupancy-based refusals now attempt the planned ComfyUI unload with the LLM still running and wait for fresh observed headroom, bounded by `timeouts.exec_vram_s`; an unload response alone never counts as reclaimed memory. A persistent deficit or failed/invalid observation preserves the resident LLM and never stops unrelated tenants. Total-card deficits reject before any unload.
+
 ## [0.5.0] - 2026-10-04
 
 ### Added

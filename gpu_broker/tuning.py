@@ -23,7 +23,7 @@ class Timeouts:
     git_s: float = 3600           # one git clone/pull
     exec_put_s: float = 120       # copying one input file to an exec recipe's host
     exec_clean_s: float = 150     # one clean of an exec job: at least the driver's clean_wait_s + 10 (checked)
-    exec_vram_s: float = 120      # before an exec recipe: freed VRAM must show up in the GPU reading
+    exec_vram_s: float = 120      # observed VRAM wait: exec recipes and ComfyUI unloads before LLM switches
     ssh_connect_s: int = 10
     container_stop_s: int = 30    # docker stop grace period
     chat_wait_s: float = 570      # /v1/chat/completions: queue + switch + run
