@@ -141,7 +141,7 @@ def test_capacity_shortfall_refuses_switch_before_mutating_the_resident(res):
     with pytest.raises(RuntimeError, match="Insufficient estimated GPU headroom"):
         res.ensure("qwen-coder-32b")
     assert res.driver.calls == before
-    assert res.backends.frees == 0
+    assert res.backends.frees == 1  # attempt only the planned ComfyUI unload, then remeasure
     assert res.driver.active == {"llama-8b"}
     assert res.current == "llama-8b"
 

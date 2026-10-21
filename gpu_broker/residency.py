@@ -17,6 +17,7 @@ from .backends import Backends
 from .catalog import Catalog
 from .constants import ERR_SHORT, Event, Runner, Verb
 from .drivers import DRIVER_ERRORS, Driver
+from .headroom import llm_headroom
 from .settings import Intervals, Timeouts
 from .store import Store
 from .units import UnitRef, unit_ref
@@ -90,46 +91,55 @@ class Residency:
             raise RuntimeError(f"ComfyUI did not come up within {self.t.comfy_start_s}s")
         self.store.event(Event.RES_COMFY_STARTED, jid)
 
-    def _preflight_llm_switch(self, key: str) -> None:
+    def _preflight_llm_switch(self, key: str) -> bool:
         """Refuse a known catalog headroom deficit before stopping the resident LLM.
 
         This is a negative capacity guard, not positive admission: catalog VRAM
         sizes are estimates, and a pass still requires post-switch verification.
-        No unregistered GPU tenant is stopped by this check.
+        No unregistered GPU tenant is stopped. Return whether ComfyUI was freed.
         """
         current = self.current
         if current is None or current == key:
-            return
+            return False
         target = int(self.catalog.models[key].get("vram_mib") or 0)
         reclaim = int(self.catalog.models[current].get("vram_mib") or 0)
-        if not target or not reclaim:
-            return  # No bound can be inferred from an absent catalog estimate.
-        try:
-            used, total, _ = self.driver.gpu()  # fresh reading, not a cached observation
-        except DRIVER_ERRORS as exc:
-            raise RuntimeError("GPU headroom observation unavailable; preserving resident LLM") from exc
-        if total <= 0 or used < 0 or used > total:
-            raise RuntimeError("Invalid GPU headroom observation; preserving resident LLM")
+        if not target:
+            return False  # No target requirement to compare with the observed card.
         reserve = int(self.catalog.defaults.get("vram_reserve_mib") or 0)
-        possible = total - used + reclaim
+        possible, total = llm_headroom(self.driver, reclaim)
+        freed = False
+        if target + reserve <= total and possible < target + reserve:
+            # /free is best effort and asynchronous. Keep the LLM until fresh
+            # occupancy actually improves; do not assume any ComfyUI allocation.
+            self.backends.comfy_free()
+            self.last_comfy = None
+            freed = True
+            end = self.clock() + self.t.exec_vram_s
+            while True:
+                possible, total = llm_headroom(self.driver, reclaim)
+                if possible >= target + reserve or target + reserve > total or self.clock() >= end:
+                    break
+                self.sleep(self.i.health_poll_s)
         if possible < target + reserve:
             raise RuntimeError(
                 f"Insufficient estimated GPU headroom for {key}: at most {possible} MiB "
                 f"after releasing {current}, require {target + reserve} MiB including reserve; "
                 "resident LLM preserved"
             )
+        return freed
 
     def ensure(self, key: str, jid: str | None = None) -> None:
         """Make `key` runnable now."""
         if self.catalog.models[key]["runner"] == Runner.LLM_UNIT:
             if self.current == key and self.healthy(key):
                 return
-            self._preflight_llm_switch(key)
+            comfy_freed = self._preflight_llm_switch(key)
             if self.current == key:  # stopped from outside since we last looked
                 self.store.event(Event.RES_LOST, jid, model=key)
                 self.current = None
             # Free ComfyUI unconditionally: it may have been used directly, outside the broker.
-            self.backends.comfy_free()
+            if not comfy_freed:
+                self.backends.comfy_free()
             self.last_comfy = None
             if self.current:
                 self._stop_llm(self.current, jid)
