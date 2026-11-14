@@ -210,3 +210,14 @@ would let use the GPU freely.
 - Content the models generate.
 - Anyone who can write the config, catalog, recipes, host script config or the broker's
   environment: they are the operator.
+
+
+## Optional read-only remote accelerator catalog (candidate)
+
+The `supercomputer_catalog` module introduces a new outbound trust boundary. It is **not** wired into request admission or production execution.
+
+- Destination is pinned to `https://api.supercomputer.sh/v1/skus`; the transport supports GET only and refuses redirects.
+- A caller-provided API key is used only in an Authorization header, never in the URL, logs, returned quote, or exception text. The eventual server integration must source it from protected environment/secret storage.
+- A fixed timeout and 256 KiB response cap bound remote reads. Malformed responses fail closed; catalog availability is not an execution authorization.
+- `tests/test_supercomputer_catalog.py` checks endpoint pinning, invalid token refusal and invalid response shape. Live network and redirect tests remain outstanding before production enablement.
+- Session creation, billing changes, file uploads, and execution are not implemented by this module. The placement authority verifier remains separate and unconnected.
