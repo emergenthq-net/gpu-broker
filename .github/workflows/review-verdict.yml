@@ -1,0 +1,104 @@
+# es.PUB-4097 -- the `review-verdict` merge gate. Replaces the unsatisfiable "1 human approval" rule.
+#
+# WHY: every PR is authored by the same identity agents use, so a required approving review can never be
+# met. The commit status `review-verdict` on a PR's head is `success` ONLY when the Codex review verdict for
+# that CURRENT head is CLEAN (RULE 43; verdict logic vendored from the hub, .github/review-verdict/VENDORED-FROM.txt).
+#
+# DESIGN (settled over 5 Codex rounds -- the class was "untrusted or incomplete input treated as trusted"):
+#   * ONE workflow, ONE job, triggered by pull_request_TARGET and the review/comment events. Every run
+#     checks out the DEFAULT BRANCH and never PR code, so a PR (fork or not) cannot replace the gate script,
+#     and no untrusted code reaches the persistent self-hosted runner.
+#   * The job posts the status context `review-verdict` on the PR's head sha through the API. A job's own check
+#     run would attach to the base sha for these events, not to the PR head; a status attaches where we say.
+#     The job is named `evaluate` so that no check run is called `review-verdict` (a skipped one would pass).
+#   * NO pull_request_review / pull_request_review_comment triggers: those run the PR's merge-ref copy of this file
+#     with statuses:write, so a PR could rewrite its own gate (Codex P1). Every Codex round ends by editing/posting
+#     its summary COMMENT, and issue_comment runs the default-branch copy, so comments alone are enough.
+#   * Event-driven, no polling. Codex edits its summary comment in place and posts reviews and inline comments,
+#     each of which lands here. Gap: a Codex thumbs-up REACTION fires no event; push, relabel, or comment to refresh.
+# STATE: 0 CLEAN -> success | 3 RUNNING -> pending | 2 FINDINGS, 4 NOT_PICKED_UP -> failure | 1 error -> error
+#        5 CODEX_OUT_OF_CREDITS -> success ONLY with label `independent-review-clean` applied after the head's
+#        SERVER-recorded push time, decided inside verdict.mjs (encoded ref, one tested predicate). The label is ALSO
+#        removed on every push, and that step is mandatory: if removal fails the job fails and no status is posted.
+# Residual: this file lives in the repo it guards. Protect .github/ (CODEOWNERS or a ruleset) so the gate cannot
+# be rewritten by a merge to the default branch without the same review.
+name: review-verdict
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened, ready_for_review, labeled, unlabeled]
+  issue_comment:
+    types: [created, edited]
+
+permissions:
+  contents: read
+  pull-requests: read
+  issues: write
+  statuses: write
+
+concurrency:
+  group: review-verdict-${{ github.event.pull_request.number || github.event.issue.number }}
+  cancel-in-progress: true
+
+jobs:
+  evaluate:
+    if: github.event_name == 'pull_request_target' || (github.event_name == 'issue_comment' && github.event.issue.pull_request)
+    runs-on: [self-hosted, Linux, X64, proxmox, lxc, emergenthq-net]
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: verdict for the current head, posted as the review-verdict status
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number || github.event.issue.number }}
+          GITHUB_EVENT_ACTION: ${{ github.event.action }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # 1. Resolve the head FIRST and invalidate any previous status on it, so a failure below can never leave an
+          #    older success standing as the gate's latest result (Codex P2 x4).
+          head0=$(gh api "repos/$REPO/pulls/$PR" --jq .head.sha)
+          # A closed PR must never write a status: its head sha may be shared with an open PR (Codex P2).
+          if [ "$(gh api "repos/$REPO/pulls/$PR" --jq .state)" != open ]; then echo "PR $PR is not open; no status posted"; exit 0; fi
+          rawpost() { gh api -X POST "repos/$REPO/statuses/$1" -f state="$2" -f context=review-verdict -f description="$(printf '%s' "$3" | cut -c1-140)" -f target_url="$RUN_URL" >/dev/null; }
+          rawpost "$head0" pending "evaluating the Codex verdict"
+          # 1b. A new push invalidates the independent-review label. MANDATORY and AFTER the pending post: if it fails the
+          #     step fails closed with the status already pending (a force-push back to an old sha cannot keep its success).
+          if [ "$GITHUB_EVENT_ACTION" = synchronize ]; then
+            # REST label replace (gh pr edit hits the deprecated classic-Projects GraphQL path and fails).
+            keep=$(gh api "repos/$REPO/issues/$PR/labels?per_page=100" --jq '[.[].name | select(. != "independent-review-clean")]')
+            printf '{"labels":%s}' "$keep" | gh api -X PUT "repos/$REPO/issues/$PR/labels" --input - >/dev/null
+            echo "independent-review-clean cleared for the new head (kept: $keep)"
+          fi
+          # 2. Two open PRs sharing one head sha would overwrite each other's status (a status belongs to the sha, not
+          #    the PR): fail closed instead.
+          shared=$(gh api "repos/$REPO/commits/$head0/pulls" --jq '[.[] | select(.state=="open" and .head.sha=="'$head0'")] | length')
+          if [ "$shared" -gt 1 ]; then rawpost "$head0" failure "$shared open PRs share this head sha; give each its own commit"; exit 0; fi
+          code=0
+          out=$(node .github/review-verdict/codex/verdict.mjs "$REPO" "$PR" 2>&1) || code=$?
+          printf '%s\n' "$out"
+          # 3. Post to the sha verdict.mjs EVALUATED (it prints it first thing); fall back to head0 so a crash is an error, not silence.
+          head=$(printf '%s\n' "$out" | sed -n 's/^HEAD_SHA=\([0-9a-f]\{40\}\)$/\1/p' | head -1)
+          head=${head:-$head0}
+          post() { rawpost "$head" "$1" "$2"; }
+          # No match is normal (script error; or a verdict line this regex does not list): never let it end the step.
+          line=$(printf '%s\n' "$out" | grep -E '^(CLEAN|FINDINGS|RUNNING|NOT_PICKED_UP|CODEX_OUT_OF_CREDITS) ' | head -1 || true)
+          echo "verdict exit code: $code ($line)"
+          case "$code" in
+            0) post success "${line:-CLEAN}" ;;
+            3) post pending "${line:-RUNNING}" ;;
+            2|4) post failure "${line:-no clean Codex verdict for this head}" ;;
+            5)
+              if printf '%s\n' "$out" | grep -qx 'INDEPENDENT_REVIEW_LABEL=valid'; then
+                post success "Codex out of credits; independent-review-clean applied after this head was pushed"
+              else
+                post failure "Codex out of credits: independently review THIS head, then apply independent-review-clean"
+              fi ;;
+            *) post error "verdict.mjs failed (exit $code); see the run log" ;;
+          esac

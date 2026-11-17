@@ -1,0 +1,6 @@
+Vendored by es.PUB-4097 from emergentsolutions/mundonow-hub @ bce8cb7a74b827663e52b8ef8a11864fecea10fe (private repo; cross-org reusable workflows are not possible).
+  codex/verdict.mjs, codex/classify.mjs, codex/reframe.mjs  <- tools/codex/
+  shared/is-main.mjs                                       <- tools/shared/
+Files are BYTE-IDENTICAL copies (no header edits) so drift is a plain content compare:
+  node tools/codex/check-vendored-verdict.mjs   (run from the hub; compares all 7 vendored repos with hub main)
+To update: copy the four files from hub main, bump the commit above, open a PR naming es.PUB-4097.
